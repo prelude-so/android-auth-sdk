@@ -314,3 +314,141 @@ data class PreludePasswordCompliancyResults(
     val valid: Boolean,
     val results: List<PreludePasswordCompliancyResult>,
 )
+
+// MARK: - List / revoke sessions
+
+/**
+ * Device class reported by the server for a session entry.
+ *
+ * The wire value (`desktop` / `mobile` / `tablet` / `unknown`) is part
+ * of the Prelude wire contract. Unknown values from a future server
+ * surface as [UNKNOWN] rather than throwing — same defensive shape as
+ * the rest of the public surface, so a server-side addition doesn't
+ * break older SDKs.
+ */
+enum class PreludeSessionDeviceType(val wireValue: String) {
+    DESKTOP("desktop"),
+    MOBILE("mobile"),
+    TABLET("tablet"),
+    UNKNOWN("unknown");
+
+    internal companion object {
+        /**
+         * Decode a server-emitted device-type string. Unknown values
+         * fold into [UNKNOWN] so an additive server change (a new
+         * device class) doesn't surface to callers as a hard error.
+         */
+        fun fromWire(value: String): PreludeSessionDeviceType =
+            entries.firstOrNull { it.wireValue == value } ?: UNKNOWN
+    }
+}
+
+/**
+ * A single active session as reported by `GET /v1/session/me/list`.
+ *
+ * Surfaces the server's audit-trail metadata so callers can render a
+ * "your active sessions" UI: device label, broad geographic origin,
+ * and the lifecycle timestamps.
+ *
+ * Timestamps are surfaced as [java.time.Instant] — the wire is ISO
+ * 8601 UTC, and parsing up-front means UIs don't have to do it on
+ * every render. A malformed timestamp fails the whole response with
+ * [PreludeSessionError.Generic] (`code = "decoding_failed"`) rather
+ * than handing the caller a half-decoded list.
+ *
+ * @property id server-assigned session identifier; pass to
+ *   [PreludeRevokeTarget.Session] to revoke a single entry.
+ * @property deviceModel human-readable device label (e.g.
+ *   `"Pixel 8"`); empty string when the server couldn't infer one.
+ * @property deviceType broad device class.
+ * @property osVersion OS marketing version (e.g. `"Android 14"`);
+ *   may be empty when not derivable from the user-agent.
+ * @property countryCode ISO 3166-1 alpha-2 country code derived from
+ *   the request IP at session creation time; may be empty when the
+ *   IP cannot be geolocated.
+ * @property createdAt when the session was first issued.
+ * @property lastSeenAt last refresh observed for this session.
+ * @property expiresAt absolute refresh-token expiry. After this
+ *   instant the session is implicitly dead even if not explicitly
+ *   revoked.
+ */
+data class PreludeSessionView(
+    val id: String,
+    val deviceModel: String,
+    val deviceType: PreludeSessionDeviceType,
+    val osVersion: String,
+    val countryCode: String,
+    val createdAt: java.time.Instant,
+    val lastSeenAt: java.time.Instant,
+    val expiresAt: java.time.Instant,
+)
+
+/**
+ * Pagination options for [so.prelude.android.session.listSessions].
+ *
+ * Both fields are nullable so the caller can defer to the server's
+ * defaults — the SDK doesn't enforce its own values so a server-side
+ * default change lands automatically without a client release. (The
+ * KDoc deliberately doesn't quote the current numbers; doing so would
+ * defeat the rationale by going stale.)
+ */
+data class PreludeListSessionsOptions(
+    val limit: Int? = null,
+    val offset: Int? = null,
+) {
+    init {
+        // Fail-fast: negative paging values are programmer errors.
+        // Catching them here surfaces the bug at the call site
+        // instead of letting the server reject the request (or worse,
+        // silently coerce it).
+        require(limit == null || limit >= 0) { "limit must be >= 0, was $limit" }
+        require(offset == null || offset >= 0) { "offset must be >= 0, was $offset" }
+    }
+}
+
+/**
+ * Page of active sessions returned by
+ * [so.prelude.android.session.listSessions].
+ *
+ * @property sessions entries on this page.
+ * @property total grand total of active sessions; use with [limit] /
+ *   [offset] to drive a paginated UI.
+ * @property limit echo of the request's `limit` (or the server
+ *   default when absent).
+ * @property offset echo of the request's `offset` (or `0` when absent).
+ */
+data class PreludeListSessionsResponse(
+    val sessions: List<PreludeSessionView>,
+    val total: Int,
+    val limit: Int,
+    val offset: Int,
+)
+
+/**
+ * What [so.prelude.android.session.revokeSessions] should kill.
+ *
+ * Sealed so the `session` case carries its [PreludeRevokeTarget.Session.sessionId]
+ * inline — the JS sibling enforces "sessionId required when target is
+ * `session`" at runtime; on Kotlin we lift the constraint into the
+ * type system so a malformed call is a compile error.
+ */
+sealed class PreludeRevokeTarget(internal val wireValue: String) {
+    /** Every session belonging to this user, across all devices. */
+    data object All : PreludeRevokeTarget("all")
+
+    /** Every session except the one issuing the call. */
+    data object Others : PreludeRevokeTarget("others")
+
+    /**
+     * The calling session — equivalent in effect to
+     * [so.prelude.android.session.logout], without revoking the
+     * server-side DPoP-key binding.
+     */
+    data object Mine : PreludeRevokeTarget("mine")
+
+    /**
+     * A single session by id. The id comes from
+     * [PreludeSessionView.id].
+     */
+    data class Session(val sessionId: String) : PreludeRevokeTarget("session")
+}

@@ -34,11 +34,26 @@ sealed class PreludeSessionError(
         PreludeSessionError("MissingChallengeToken: $message")
 
     /**
-     * Backend-issued challenge token is invalid, or local JWT decoding
-     * rejected it.
+     * Backend-issued challenge token is invalid, or the step-up state
+     * machine cannot progress (step skipped, not completed, missing).
+     * Recover via [requestStepUp].
      */
     class InvalidChallengeToken(message: String) :
         PreludeSessionError("InvalidChallengeToken: $message")
+
+    /**
+     * Challenge token expired before it was redeemed. Recover via
+     * [requestStepUp].
+     */
+    class ExpiredChallengeToken(message: String) :
+        PreludeSessionError("ExpiredChallengeToken: $message")
+
+    /**
+     * Single-use token was replayed. Surfaces from `/login/finalize`,
+     * `/otp/check`, and `/stepup/continue` on a 409.
+     */
+    class TokenReused(message: String) :
+        PreludeSessionError("TokenReused: $message")
 
     /**
      * The OTP code submitted during login was wrong or expired.
@@ -88,6 +103,15 @@ sealed class PreludeSessionError(
     class InsufficientScope(message: String) :
         PreludeSessionError("InsufficientScope: $message")
 
+    /** Resource the request referenced does not exist. */
+    class NotFound(message: String) : PreludeSessionError("NotFound: $message")
+
+    /**
+     * Resource state conflicts with the request (e.g. duplicate
+     * identifier on sign-up).
+     */
+    class Conflict(message: String) : PreludeSessionError("Conflict: $message")
+
     /** Network-level failure (DNS, connection reset, TLS, etc.). */
     class Network(cause: Throwable) : PreludeSessionError("Network: ${cause.message}", cause)
 
@@ -129,23 +153,53 @@ sealed class PreludeSessionError(
 internal fun PreludeSessionError.Companion.from(apiError: ApiErrorJson): PreludeSessionError {
     val message = apiError.displayMessage
     return when (apiError.code) {
-        "bad_request" -> PreludeSessionError.BadRequest(message)
-        "unauthorized" -> PreludeSessionError.Unauthorized(message)
+        "bad_request",
+        "invalid_identifier",
+        "invalid_metadata",
+        "invalid_pagination_limit",
+        "invalid_pagination_offset",
+        "invalid_redirect_uri",
+        "invalid_verification_token",
+        "oauth_provider_not_configured",
+        "oauth_provider_disabled",
+        -> PreludeSessionError.BadRequest(message)
+        "unauthorized",
+        "invalid_dpop_proof",
+        "dpop_key_mismatch",
+        "missing_dpop_proof",
+        -> PreludeSessionError.Unauthorized(message)
         "bad_check_code" -> PreludeSessionError.InvalidOTPCode(message)
         "rate_limited", "too_many_requests" -> PreludeSessionError.RateLimited(message)
-        "internal_server_error" -> PreludeSessionError.InternalServerError(message)
+        // Backend emits `internal`; `internal_server_error` is kept
+        // as a defensive alias.
+        "internal", "internal_server_error" -> PreludeSessionError.InternalServerError(message)
         "missing_challenge_token" -> PreludeSessionError.MissingChallengeToken(message)
-        "invalid_challenge_token" -> PreludeSessionError.InvalidChallengeToken(message)
+        "invalid_challenge_token",
+        "step_not_completed",
+        "step_not_found",
+        "step_bypassed",
+        "token_mismatch",
+        -> PreludeSessionError.InvalidChallengeToken(message)
+        "expired_challenge_token" -> PreludeSessionError.ExpiredChallengeToken(message)
+        "token_reused" -> PreludeSessionError.TokenReused(message)
         "invalid_password" -> PreludeSessionError.InvalidPassword(message)
-        // `auth_blocked` is the server's catch-all for "auth policy
+        // `auth_blocked` is the server's catch-all "auth policy
         // rejected this request"; `scope_not_allowed` is step-up's
         // specific refusal ("this session can't grant that scope");
-        // `email_verification_not_allowed` is OTP's "email channel is
-        // disabled for this app" refusal. All three fold into
-        // `Forbidden` so UIs can branch on a single case, matching
-        // how the OTP KDoc documents the throw.
-        "forbidden", "auth_blocked", "scope_not_allowed", "email_verification_not_allowed" -> PreludeSessionError.Forbidden(message)
+        // `not_configured` / `direct_scope_identifier_mismatch` are
+        // step-up policy refusals; `email_verification_not_allowed`
+        // is OTP's "email channel is disabled" refusal. All fold
+        // into `Forbidden` so UIs can branch on a single case.
+        "forbidden",
+        "auth_blocked",
+        "scope_not_allowed",
+        "not_configured",
+        "direct_scope_identifier_mismatch",
+        "email_verification_not_allowed",
+        -> PreludeSessionError.Forbidden(message)
         "insufficient_scope" -> PreludeSessionError.InsufficientScope(message)
+        "not_found" -> PreludeSessionError.NotFound(message)
+        "conflict", "identifier_already_exists" -> PreludeSessionError.Conflict(message)
         else -> PreludeSessionError.Generic(code = apiError.code, displayMessage = message)
     }
 }

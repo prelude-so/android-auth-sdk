@@ -50,6 +50,13 @@ internal class HttpClient(
     private val session: HttpSession = OkHttpSession(),
     private val clock: NowProvider = { Instant.now() },
     private val json: Json = defaultJson,
+    /**
+     * Optional handle on the cookie jar shared with [session] so
+     * the SDK can wipe per-domain cookies in [clearAllStores].
+     * `null` when a test injects its own [HttpSession] (no jar to
+     * wipe).
+     */
+    val cookieJar: InMemoryCookieJar? = null,
 ) {
     /**
      * Raw response — does not map status codes. For interceptors that
@@ -148,5 +155,19 @@ internal class HttpClient(
                 .withZone(ZoneOffset.UTC)
 
         internal val defaultJson: Json = Json { ignoreUnknownKeys = true }
+
+        /**
+         * Build an [HttpClient] whose [OkHttpSession] shares
+         * [cookieJar]. The same jar is exposed on the returned
+         * client so the SDK can wipe its per-domain cookies on
+         * logout / revoke.
+         */
+        internal fun withCookieJar(
+            cookieJar: InMemoryCookieJar = InMemoryCookieJar(),
+        ): HttpClient =
+            HttpClient(
+                session = OkHttpSession(OkHttpSession.defaultClient(cookieJar)),
+                cookieJar = cookieJar,
+            )
     }
 }

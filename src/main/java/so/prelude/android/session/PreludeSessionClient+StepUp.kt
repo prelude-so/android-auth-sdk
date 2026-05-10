@@ -18,12 +18,18 @@ import so.prelude.android.session.http.WIRE_JSON
 /*
  * Step-up surface for [PreludeSessionClient].
  *
- * Two public entry points:
+ * Three public entry points:
  *
- *   - [requestStepUp]   — initiate a flow for a given scope. When
- *     the next step is OTP delivery (the common case for
- *     `prld:pwd:write`) this auto-fires `POST /otp` so the caller's
- *     next action is "enter the code".
+ *   - [requestStepUp]   — initiate a flow for a given scope.
+ *     Returns the [PreludeStepUpChallenge] handle but does NOT fire
+ *     `POST /otp` on its own — the caller decides when to trigger
+ *     delivery. A server-side `review` flow won't get an
+ *     unsolicited code, and callers driving a "resend code" button
+ *     or a multi-screen UI keep full control over delivery timing.
+ *   - [sendStepUpOTP]   — fire `POST /otp` for the in-flight
+ *     challenge so the user receives an email/SMS code. Call this
+ *     whenever the current step is an OTP-delivery step
+ *     (`verify_email` / `verify_sms`).
  *   - [submitStepUpOTP] — submit a code; advance the challenge or
  *     complete it. Returns the next [PreludeStepUpChallenge] for
  *     multi-step flows, or `null` once the post-completion refresh
@@ -37,29 +43,10 @@ import so.prelude.android.session.http.WIRE_JSON
  *     across concurrent flows where a shared cache would need
  *     explicit lifecycle bookkeeping.
  *
- *   - Multi-step OTP delivery is symmetric: `requestStepUp` and
- *     `submitStepUpOTP` both fire `POST /otp` when they advance to a
- *     step that needs a code, so a `verify_email → verify_sms`
- *     chain "just works" without an extra `otpCreate` call from the
- *     caller.
- *
  *   - On `bad_check_code` the original challenge handle stays
  *     usable up to the server's bucket limit. Any other failure
  *     means the challenge is dead — recover via [requestStepUp].
  */
-
-// MARK: - Step name constants
-
-/**
- * Step names that imply OTP delivery. When a challenge advances to
- * one of these, [requestStepUp] / [submitStepUpOTP] auto-fire
- * `POST /otp` so the caller's next action is just "submit the code".
- *
- * Kept narrow on purpose — adding a new delivery channel here
- * without server coordination would silently fire requests against
- * routes the server doesn't expose.
- */
-private val OTP_STEP_NAMES: Set<String> = setOf("verify_email", "verify_sms")
 
 private const val COMPLETED_STEP = "completed"
 
@@ -69,15 +56,16 @@ private const val COMPLETED_STEP = "completed"
  * Initiate a step-up authentication flow for [scope].
  *
  * Posts to `/stepup/request` with the caller's authenticated session
- * (DPoP + auto-refresh). When the server issues an OTP challenge —
- * the common case for scopes like `prld:pwd:write` — this also
- * fires `POST /otp` inline so the caller's next action is "enter
- * the code".
+ * (DPoP + auto-refresh). Returns a [PreludeStepUpChallenge] handle —
+ * pass it to [sendStepUpOTP] to trigger code delivery, then to
+ * [submitStepUpOTP] to verify.
  *
- * The returned [PreludeStepUpChallenge] is the only handle to this
- * attempt — pass it back to [submitStepUpOTP]. Multiple in-flight
- * step-ups on one client are supported; each caller holds its own
- * value.
+ * Multiple in-flight step-ups on one client are supported; each
+ * caller holds its own challenge value.
+ *
+ * [metadata] is forwarded verbatim to the server's step-up audit
+ * hook. Server caps apply (max 5 keys, 12-char keys, 32-char
+ * values); a violation surfaces as [PreludeSessionError.BadRequest].
  *
  * Throws [PreludeSessionError.MissingChallengeToken] when the server
  * returns a `continue` / `review` status without the promised
@@ -88,11 +76,14 @@ private const val COMPLETED_STEP = "completed"
  * [PreludeStepUpStatus.BLOCKED] — UIs typically branch on that rather
  * than treating it as an exception.
  */
-suspend fun PreludeSessionClient.requestStepUp(scope: String): PreludeStepUpChallenge {
+suspend fun PreludeSessionClient.requestStepUp(
+    scope: String,
+    metadata: Map<String, String>? = null,
+): PreludeStepUpChallenge {
     val dispatchId = dispatchSignalsIfConfigured()
 
     val payload = WIRE_JSON.encodeToString(
-        StepUpRequestBody(scope = scope, dispatchId = dispatchId),
+        StepUpRequestBody(scope = scope, metadata = metadata, dispatchId = dispatchId),
     )
     val request = buildSessionRequest("stepup/request")
         .method("POST", payload.toRequestBody(JSON_MEDIA_TYPE))
@@ -116,6 +107,7 @@ suspend fun PreludeSessionClient.requestStepUp(scope: String): PreludeStepUpChal
 
     if (status == PreludeStepUpStatus.BLOCKED) {
         return PreludeStepUpChallenge.blocked(requestedScope = scope)
+            .also(::setActiveStepUp)
     }
 
     val challengeToken = body.challengeToken
@@ -147,8 +139,52 @@ suspend fun PreludeSessionClient.requestStepUp(scope: String): PreludeStepUpChal
         )
     }
 
-    deliverOTPIfNeeded(challenge)
+    setActiveStepUp(challenge)
     return challenge
+}
+
+/**
+ * Trigger OTP delivery (`POST /otp`) for an in-flight step-up
+ * [challenge].
+ *
+ * Call this when [challenge] sits at an OTP-delivery step
+ * (`verify_email` / `verify_sms`) so the user receives the code.
+ * Caller-driven on purpose — the UI decides when delivery fires
+ * (e.g., not until the user lands on the code-entry screen, or to
+ * support a "resend code" button).
+ *
+ * Unauthenticated: the challenge token in the body identifies the
+ * caller; no DPoP. When a [signalsDispatcher] is configured the
+ * helper attaches a fresh `dispatch_id` so anti-fraud signals are
+ * carried — same shape as the OTP-login path.
+ *
+ * Throws [PreludeSessionError.InvalidChallengeToken] if [challenge]
+ * is blocked (carries no token).
+ */
+suspend fun PreludeSessionClient.sendStepUpOTP(challenge: PreludeStepUpChallenge) {
+    if (challenge.token.isEmpty()) {
+        // Blocked challenges carry no token. Catching here means the
+        // SDK never fires `/otp` with an empty token — the server
+        // would 400, which would leak as a generic BadRequest and
+        // obscure the real cause.
+        throw PreludeSessionError.InvalidChallengeToken(
+            "Cannot send OTP for a blocked step-up challenge",
+        )
+    }
+
+    val dispatchId = dispatchSignalsIfConfigured()
+
+    val payload = WIRE_JSON.encodeToString(
+        StepUpOTPCreateRequestBody(
+            challengeToken = challenge.token,
+            dispatchId = dispatchId,
+        ),
+    )
+    val request = buildSessionRequest("otp")
+        .method("POST", payload.toRequestBody(JSON_MEDIA_TYPE))
+        .build()
+
+    httpClient.sendExpectingNoBody(request)
 }
 
 /**
@@ -156,7 +192,9 @@ suspend fun PreludeSessionClient.requestStepUp(scope: String): PreludeStepUpChal
  *
  * Returns the next [PreludeStepUpChallenge] for multi-step flows, or
  * `null` once the flow has completed and the session has been
- * refreshed with the granted scope.
+ * refreshed with the granted scope. For a multi-step flow whose next
+ * step is also OTP delivery, the caller must invoke [sendStepUpOTP]
+ * on the returned handle to trigger the next code.
  *
  * On a `bad_check_code` rejection the original [challenge] stays
  * usable up to the server's bucket limit — re-call with a corrected
@@ -252,10 +290,13 @@ suspend fun PreludeSessionClient.submitStepUpOTP(
         // scoped refresh in the inflight slot so any concurrent
         // protected request piggybacks on the scoped result.
         refreshAfterStepUp(advanced)
+        // Flow is finished — drop the handle so a stale completed
+        // challenge can't leak into a later observer.
+        setActiveStepUp(null)
         return null
     }
 
-    deliverOTPIfNeeded(next)
+    setActiveStepUp(next)
     return next
 }
 
@@ -290,52 +331,6 @@ internal suspend fun PreludeSessionClient.refreshAfterStepUp(challengeToken: Str
         invalidateCache()
         doRefresh(stepUpToken = challengeToken)
     }
-
-/**
- * Auto-fire `POST /otp` when [challenge] sits at an OTP-delivery
- * step. Symmetric across [requestStepUp] and [submitStepUpOTP] so
- * a multi-step OTP chain (e.g. `verify_email → verify_sms`) keeps
- * firing each step's delivery — without symmetry the second
- * delivery would silently not fire.
- *
- * Restricted to [PreludeStepUpStatus.CONTINUE]: a `review` flow means
- * "wait, we'll get back to you" — the server isn't expecting an
- * OTP submission at that step regardless of the step's name, and
- * an unsolicited `/otp` would either be rejected or count against
- * the user's rate-limit bucket for the eventual real flow.
- */
-private suspend fun PreludeSessionClient.deliverOTPIfNeeded(
-    challenge: PreludeStepUpChallenge,
-) {
-    if (challenge.status != PreludeStepUpStatus.CONTINUE) return
-    val step = challenge.currentStep ?: return
-    if (step !in OTP_STEP_NAMES) return
-    sendStepUpOTP(challengeToken = challenge.token)
-}
-
-/**
- * Trigger OTP delivery for an in-flight challenge.
- *
- * Unauthenticated: the challenge token in the body identifies the
- * caller; no DPoP. When a [signalsDispatcher] is configured the
- * helper attaches a fresh `dispatch_id` so anti-fraud signals are
- * carried — same shape as the OTP-login path.
- */
-private suspend fun PreludeSessionClient.sendStepUpOTP(challengeToken: String) {
-    val dispatchId = dispatchSignalsIfConfigured()
-
-    val payload = WIRE_JSON.encodeToString(
-        StepUpOTPCreateRequestBody(
-            challengeToken = challengeToken,
-            dispatchId = dispatchId,
-        ),
-    )
-    val request = buildSessionRequest("otp")
-        .method("POST", payload.toRequestBody(JSON_MEDIA_TYPE))
-        .build()
-
-    httpClient.sendExpectingNoBody(request)
-}
 
 /**
  * Decode a challenge JWT into a [PreludeStepUpChallenge].

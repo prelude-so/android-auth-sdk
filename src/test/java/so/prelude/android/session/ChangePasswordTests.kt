@@ -181,9 +181,12 @@ class ChangePasswordTests {
     }
 
     @Test
-    fun changePassword_attachesBearerAndDPoPProof() = runBlocking {
-        // Protected route: must carry both the auto-refresh-attached
-        // `Authorization: Bearer ...` and a DPoP proof.
+    fun changePassword_attachesBearer_butNotDPoPProof() = runBlocking {
+        // /me/password/reset is bearer-only on the server: the
+        // access token + `prld:pwd:write` scope is the entire
+        // credential. Sending a DPoP proof would be ignored at best,
+        // and on strict proxies short-circuits the request before the
+        // server can return its real status.
         val fixture = Fixture.make()
         fixture.prePopulate()
         fixture.http.installAll(
@@ -199,8 +202,8 @@ class ChangePasswordTests {
             "Bearer $scopedAccessToken",
             req.header(HttpHeader.AUTHORIZATION),
         )
-        assertNotNull(
-            "/me/password/reset must carry a DPoP proof",
+        assertNull(
+            "/me/password/reset must NOT carry a DPoP proof",
             req.header(HttpHeader.DPOP),
         )
     }
@@ -581,5 +584,59 @@ class ChangePasswordTests {
             delay(5)
         }
         throw AssertionError("timed out waiting for condition (after ${timeoutMs}ms)")
+    }
+
+    @Test
+    fun changePassword_success_clearsActiveStepUp() = runBlocking {
+        // The reset consumes any in-flight step-up; the handle must
+        // not survive a successful reset, otherwise an observer would
+        // see a stale challenge after the scope's been spent.
+        val fixture = Fixture.make()
+        fixture.prePopulate()
+        fixture.http.installAll(
+            "/v1/session/me/password/reset" to StubHttpSession.Canned(statusCode = 204),
+            "/v1/session/refresh" to refreshOk(),
+        )
+        // Seed an active handle directly — the lifecycle through
+        // requestStepUp/submitStepUpOTP is covered by the step-up suite;
+        // here we only care about the post-reset clear.
+        fixture.client.setActiveStepUp(
+            PreludeStepUpChallenge.blocked(requestedScope = "prld:pwd:write"),
+        )
+
+        fixture.client.changePassword(RedactedString("new-secret-password"))
+
+        assertNull(
+            "successful reset must clear activeStepUp",
+            fixture.client.activeStepUp,
+        )
+    }
+
+    @Test
+    fun changePassword_failure_clearsActiveStepUp() = runBlocking {
+        // Symmetric to the success case: the handle clears on every
+        // outcome via `finally`. A stale challenge surviving a failed
+        // reset would let an observer believe a flow is still open
+        // when it's already been consumed by the request — and the
+        // recovery path is the same as success (re-request step-up).
+        val fixture = Fixture.make()
+        fixture.prePopulate()
+        fixture.http.install(
+            "/v1/session/me/password/reset",
+            apiError("invalid_password", "too weak", status = 400),
+        )
+        fixture.client.setActiveStepUp(
+            PreludeStepUpChallenge.blocked(requestedScope = "prld:pwd:write"),
+        )
+
+        assertThrows(PreludeSessionError.InvalidPassword::class.java) {
+            runBlocking {
+                fixture.client.changePassword(RedactedString("weak"))
+            }
+        }
+        assertNull(
+            "failed reset must still clear activeStepUp",
+            fixture.client.activeStepUp,
+        )
     }
 }

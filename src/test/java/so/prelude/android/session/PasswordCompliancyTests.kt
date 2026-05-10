@@ -3,10 +3,13 @@ package so.prelude.android.session
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import so.prelude.android.session.http.HttpHeader
+import so.prelude.android.session.store.AccessTokenEntry
+import so.prelude.android.session.store.RefreshTokenRecord
 
 /**
  * Unit tests for the password-compliancy surface
@@ -82,6 +85,82 @@ class PasswordCompliancyTests {
         assertNull(
             "compliancy fetch must NOT carry a DPoP proof",
             req.header(HttpHeader.DPOP),
+        )
+    }
+
+    @Test
+    fun getPasswordCompliancy_doesNotMutateAccessCache_orHitRefresh() = runBlocking {
+        // Pre-warm access-token cache + refresh-token store with
+        // recognisable values, fetch compliancy, then assert both stores
+        // are byte-identical and `/refresh` never fired. Reads from a
+        // public-config endpoint must not touch session state.
+        val seededAccessToken =
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEifQ.sig"
+        val fixture = Fixture.make()
+        fixture.accessTokenCache.set(
+            domain = fixture.domain,
+            entry = AccessTokenEntry(
+                accessToken = seededAccessToken,
+                expiresAt = fixture.clock.epochSecond + 3_600,
+            ),
+        )
+        fixture.refreshTokenStore.set(
+            domain = fixture.domain,
+            record = RefreshTokenRecord(
+                refreshToken = "refresh-pre",
+                refreshTokenExpiresAt = "2099-01-01T00:00:00Z",
+            ),
+        )
+        fixture.http.install(
+            "/v1/session/password/compliancy",
+            StubHttpSession.Canned.json(
+                """{"min_length":8,"max_length":0,"uppercase":0,""" +
+                    """"lowercase":0,"numbers":0,"symbols":0}""",
+            ),
+        )
+
+        fixture.client.getPasswordCompliancy()
+
+        // Cache + store untouched.
+        assertEquals(
+            seededAccessToken,
+            fixture.accessTokenCache.getWithoutExpirationCheck(fixture.domain)?.accessToken,
+        )
+        assertEquals(
+            "refresh-pre",
+            fixture.refreshTokenStore.get(fixture.domain)?.refreshToken,
+        )
+        // Public config — no refresh round-trip.
+        assertEquals(0, fixture.http.requestCount("/v1/session/refresh"))
+    }
+
+    @Test
+    fun getPasswordCompliancy_useDPoPNonce_doesNotRetry() = runBlocking {
+        // /password/compliancy is unauthenticated; no DPoPInterceptor
+        // is on the chain. A server that mistakenly emits
+        // `use_dpop_nonce` here has no SDK-side handler to flip into
+        // the challenge/retry path — the error must surface verbatim
+        // on the first attempt, never loop into a second round-trip.
+        val fixture = Fixture.make()
+        fixture.http.install(
+            "/v1/session/password/compliancy",
+            StubHttpSession.Canned.json(
+                """{"code":"use_dpop_nonce","message":"go away"}""",
+                statusCode = 400,
+            ),
+        )
+
+        val thrown = try {
+            fixture.client.getPasswordCompliancy()
+            null
+        } catch (e: PreludeSessionError) {
+            e
+        }
+        assertNotNull("expected an error, got null", thrown)
+        assertEquals(
+            "unauthenticated route must not loop on use_dpop_nonce",
+            1,
+            fixture.http.requestCount("/v1/session/password/compliancy"),
         )
     }
 

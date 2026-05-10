@@ -7,10 +7,10 @@ It is provided as a regular Maven artifact that you can use as a normal dependen
 
 ```
 (Kts)
-implementation("so.prelude.android:session-sdk:0.1.1")
+implementation("so.prelude.android:session-sdk:0.2.0")
 
 (Groovy)
-implementation 'so.prelude.android:session-sdk:0.1.1'
+implementation 'so.prelude.android:session-sdk:0.2.0'
 ```
 
 #### Email OTP login
@@ -39,7 +39,7 @@ client.startOTPLogin(
 val user = client.checkOTP("123456")
 ```
 
-If the user wants the code resent, call `client.retryOTP()`.
+If the user wants the code resent, call `client.resendOTP()`.
 
 #### Email and password login
 
@@ -54,14 +54,20 @@ val user = client.loginWithPassword(
 
 #### Password validation
 
-Fetch the password policy configured on your project, then validate a candidate password locally — pure function, safe to call on every keystroke:
+One-shot validation against the project policy:
+
+```kotlin
+val result = client.validatePassword("candidate")
+if (result.valid) {
+    // ok to submit
+}
+```
+
+Or fetch the policy once and classify locally — pure function, safe to call on every keystroke:
 
 ```kotlin
 val policy = client.getPasswordCompliancy()
 val result = policy.validate("candidate")
-if (result.valid) {
-    // ok to submit
-}
 ```
 
 #### Session lifecycle
@@ -75,6 +81,45 @@ val token   = client.getAccessToken()     // the access token, if any
 ```
 
 Protected requests auto-refresh expired access tokens transparently, so most apps will not need to call `refresh()` explicitly.
+
+#### Step-up authentication
+
+Some operations (e.g. changing the password) require a fresh proof of identity. Request the scope, deliver the OTP, then submit the code:
+
+```kotlin
+val challenge = client.requestStepUp("prld:pwd:write")
+client.sendStepUpOTP(challenge)                  // POST /otp
+val next = client.submitStepUpOTP(challenge, "123456")
+
+// `next == null` means the flow completed and the session now
+// carries the requested scope. A non-null value is the next
+// challenge in a multi-step flow — call `sendStepUpOTP` on it
+// to deliver the next code.
+```
+
+#### Change password
+
+After completing a step-up for `prld:pwd:write`:
+
+```kotlin
+client.changePassword(RedactedString("new-password"))
+```
+
+The SDK drops the granted scope locally on success so the same token cannot reset the password again.
+
+#### Manage active sessions
+
+List the user's sessions across devices and revoke them individually or in bulk:
+
+```kotlin
+val page = client.listSessions(PreludeListSessionsOptions(limit = 20))
+
+client.revokeSessions(PreludeRevokeTarget.Others)              // keep this device, sign out the rest
+client.revokeSessions(PreludeRevokeTarget.Session(sessionId))  // revoke a specific session
+client.revokeSessions(PreludeRevokeTarget.All)                 // including this device
+```
+
+Revoking the current session (`All`, `Mine`, or its specific id) also wipes the local credentials, mirroring `logout()`.
 
 #### Endpoint configuration
 

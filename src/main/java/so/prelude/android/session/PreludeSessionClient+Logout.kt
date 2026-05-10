@@ -3,6 +3,7 @@ package so.prelude.android.session
 import kotlinx.coroutines.CancellationException
 import okhttp3.Request
 import so.prelude.android.session.dpop.DPoPKey
+import so.prelude.android.session.dpop.DPoPKeyStoreError
 import so.prelude.android.session.dpop.createDPoPProof
 import so.prelude.android.session.http.HttpHeader
 import so.prelude.android.session.http.dpopHtu
@@ -142,15 +143,32 @@ private suspend fun PreludeSessionClient.doLogout() {
         return
     }
 
-    val request = buildRevokeRequest(dpopKey, dpopNonce, refreshToken)
+    // Build the `/revoke` request — signs the DPoP proof inline.
+    // A signing failure here (e.g. `KeyPermanentlyInvalidatedException`
+    // after a lock-screen credential change, or an AVD snapshot
+    // rollback that retired the AndroidKeystore key) is unrecoverable
+    // on this hardware: there is no path to attempt `/revoke` without
+    // the original DPoP private key. The local wipe already succeeded,
+    // so the device can no longer use this session and the server
+    // session expires on its own via TTL. Silently degrade to "skip
+    // `/revoke`" rather than surfacing a noise error the caller can't
+    // act on.
+    val request = runCatching {
+        buildRevokeRequest(dpopKey, dpopNonce, refreshToken)
+    }.rethrowingCancellation().getOrNull()
+        ?: run {
+            wipeError?.let { throw it }
+            return
+        }
 
-    // Run `/revoke` and capture (don't throw) any failure — we surface
-    // the wipe error in preference. The local-state failure is the more
-    // security-critical of the two: the server session expires on its
-    // own via TTL, but a stale credential left on a (potentially
-    // compromised) device does not. Silencing `wipeError` would also
-    // hide the partial state from the caller, who would then have no
-    // signal that a retry of `logout()` is needed.
+    // Send `/revoke` and capture (don't throw) any failure — we
+    // surface the wipe error in preference. The local-state failure
+    // is the more security-critical of the two: the server session
+    // expires on its own via TTL, but a stale credential left on a
+    // (potentially compromised) device does not. Silencing
+    // `wipeError` would also hide the partial state from the caller,
+    // who would then have no signal that a retry of `logout()` is
+    // needed.
     val revokeError = runCatching {
         httpClient.sendExpectingNoBody(request)
     }.rethrowingCancellation().exceptionOrNull()
@@ -230,6 +248,17 @@ internal fun PreludeSessionClient.clearAllStores() {
     attempt { keyStore.deleteNonce(domain) }
     attempt { refreshTokenStore.delete(domain) }
     attempt { accessTokenCache.clear(domain) }
+    // Wipe per-domain cookies (`verification`, `did`, …). The jar
+    // is in-memory and process-scoped on Android — without this
+    // wipe, the next login flow on the same client would see
+    // server-set markers from the just-revoked session. `null`
+    // when a test injected a custom [HttpClient].
+    httpClient.cookieJar?.clear(domain)
+    // In-memory step-up handle, not a store — `AtomicReference.set`
+    // can't throw, so it lives outside `attempt`. Logically part of
+    // the wipe: a stale challenge that survives logout would let a
+    // post-logout observer believe a flow is still in progress.
+    setActiveStepUp(null)
 
     firstError?.let { throw it }
 }
