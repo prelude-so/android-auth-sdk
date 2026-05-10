@@ -16,12 +16,13 @@ import so.prelude.android.session.http.WireIdentifier
  *
  *   - [startOTPLogin]  — unauthenticated, no DPoP / no bearer; attaches
  *     a `dispatch_id` from [PreludeSignalsDispatcher] when configured.
- *   - [retryOTP]       — unauthenticated; asks the server to re-send
+ *   - [resendOTP]       — unauthenticated; asks the server to re-send
  *     the most recently issued OTP. No DPoP.
- *   - [checkOTP]       — DPoP-signed; submits the code, exchanges the
- *     resulting challenge token on `/login/finalize`, and returns the
- *     authenticated [PreludeUser]. The same `finalizeLogin` helper is
- *     reused across login surfaces.
+ *   - [checkOTP]       — unauthenticated. The OTP code in the body is
+ *     the entire credential; no session key exists yet, so a DPoP
+ *     proof has nothing legitimate to bind to. The device-to-token
+ *     binding happens one step later, on `/login/finalize`, which
+ *     [finalizeLogin] handles.
  *
  * Contract: only [finalizeLogin] (post-login) and `refresh()` (post-
  * rotation) write to the refresh-token store. Other call sites that
@@ -75,7 +76,7 @@ suspend fun PreludeSessionClient.startOTPLogin(options: StartOTPLoginOptions) {
  * so a second `dispatch_id` would double-bill the rate-limit bucket
  * and provide no additional anti-fraud coverage.
  */
-suspend fun PreludeSessionClient.retryOTP() {
+suspend fun PreludeSessionClient.resendOTP() {
     val request = buildSessionRequest("otp/retry").build()
     httpClient.sendExpectingNoBody(request)
 }
@@ -85,15 +86,13 @@ suspend fun PreludeSessionClient.retryOTP() {
  *
  * Two-step credential exchange:
  *
- *   1. `POST /otp/check` returns a short-lived single-use
- *      `challenge_token` (DPoP-signed so the server can bind the
- *      challenge to this device's keypair).
+ *   1. `POST /otp/check` — unauthenticated. The OTP code is the
+ *      whole credential; no DPoP proof is attached because no
+ *      session key exists yet to bind one to. Returns a short-lived
+ *      single-use `challenge_token`.
  *   2. [finalizeLogin] exchanges the challenge on `/login/finalize`
- *      for the access + refresh token (also DPoP-signed).
- *
- * Both hops route through the [DPoPInterceptor]; neither attaches the
- * [AutoRefreshInterceptor] — there's no bearer to refresh until
- * `/login/finalize` returns one.
+ *      for the access + refresh token. That hop **is** DPoP-signed
+ *      — it's where the issued tokens get bound to the device key.
  *
  * Throws [PreludeSessionError.InvalidOTPCode] for a wrong / expired code,
  * [PreludeSessionError.MissingChallengeToken] when `/otp/check` returns
@@ -110,7 +109,6 @@ suspend fun PreludeSessionClient.checkOTP(code: String): PreludeUser {
     val (response, _) = httpClient.sendJson(
         request = request,
         deserializer = ChallengeTokenResponse.serializer(),
-        interceptors = listOf(dpopInterceptor),
     )
 
     val challengeToken = response.challengeToken

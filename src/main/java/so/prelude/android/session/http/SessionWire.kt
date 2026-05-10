@@ -66,7 +66,16 @@ internal data class WireIdentifier(
 @Serializable
 internal data class CheckOTPRequestBody(
     val code: String,
-)
+) {
+    /**
+     * Redact the OTP plaintext from `toString()` so a stray
+     * `Log.d(..., body.toString())` (or a coroutine error path
+     * that captures the body as context) doesn't leak the code
+     * the user just typed. JSON encoding still ships the
+     * plaintext — redaction targets only stringified surfaces.
+     */
+    override fun toString(): String = "CheckOTPRequestBody(code=<redacted>)"
+}
 
 // MARK: - Password login
 
@@ -134,12 +143,16 @@ internal data class FinalizeLoginRequestBody(
  *
  * @property scope OAuth-style scope being requested (e.g.
  *   `"prld:pwd:write"`).
+ * @property metadata free-form key/value pairs forwarded verbatim to
+ *   the server's step-up audit hook. Server caps: max 5 keys,
+ *   12-char keys, 32-char values.
  * @property dispatchId anti-fraud signals envelope id; `null` when no
  *   `PreludeSignalsDispatcher` is configured.
  */
 @Serializable
 internal data class StepUpRequestBody(
     val scope: String,
+    val metadata: Map<String, String>? = null,
     @SerialName("dispatch_id") val dispatchId: String? = null,
 )
 
@@ -177,7 +190,16 @@ internal data class StepUpOTPCreateRequestBody(
 internal data class StepUpOTPCheckRequestBody(
     val code: String,
     @SerialName("challenge_token") val challengeToken: String,
-)
+) {
+    /**
+     * Redact both fields. The OTP plaintext is the user's secret;
+     * the challenge token is single-use but a bearer-equivalent
+     * for the in-flight step-up — leaking it in logs would let an
+     * observer race the legitimate caller to redeem it.
+     */
+    override fun toString(): String =
+        "StepUpOTPCheckRequestBody(code=<redacted>, challengeToken=<redacted>)"
+}
 
 /**
  * Body posted to `POST /v1/session/refresh` after a step-up
@@ -236,4 +258,51 @@ internal data class PasswordCompliancyResponse(
     val lowercase: Int,
     val numbers: Int,
     val symbols: Int,
+)
+
+// MARK: - List sessions
+
+/**
+ * Wire-shaped projection of
+ * [so.prelude.android.session.PreludeSessionView].
+ *
+ * Timestamps stay as [String]s on the wire (ISO 8601 UTC) and are
+ * parsed into [java.time.Instant] at the boundary in
+ * `PreludeSessionClient+Sessions.kt`. Keeping the parsing in one place
+ * means a malformed timestamp surfaces as a single, consistent decode
+ * failure regardless of which field carried the bad value.
+ *
+ * Every field defaults so a server response missing one decodes into
+ * an empty / sentinel value rather than a structural
+ * [kotlinx.serialization.MissingFieldException]. Empty timestamps
+ * still trip [parseInstant] in `toPublic` and surface as the SDK's
+ * `decoding_failed` error — same outcome as today, just routed
+ * through the public error type instead of a kotlinx exception.
+ */
+@Serializable
+internal data class SessionViewResponse(
+    val id: String = "",
+    @SerialName("device_model") val deviceModel: String = "",
+    @SerialName("device_type") val deviceType: String = "unknown",
+    @SerialName("os_version") val osVersion: String = "",
+    @SerialName("country_code") val countryCode: String = "",
+    @SerialName("created_at") val createdAt: String = "",
+    @SerialName("last_seen_at") val lastSeenAt: String = "",
+    @SerialName("expires_at") val expiresAt: String = "",
+)
+
+/**
+ * Body returned by `GET /v1/session/me/list`.
+ *
+ * Field defaults mirror the JS sibling's runtime fallback so a
+ * server response missing `total` / `limit` / `offset` doesn't throw
+ * a structural decode error — the page just renders empty and the
+ * caller can re-query.
+ */
+@Serializable
+internal data class ListSessionsResponse(
+    val sessions: List<SessionViewResponse> = emptyList(),
+    val total: Int = 0,
+    val limit: Int = 0,
+    val offset: Int = 0,
 )

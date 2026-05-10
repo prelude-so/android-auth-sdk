@@ -1,22 +1,27 @@
 package so.prelude.android.session.http
 
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Protocol
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import so.prelude.android.session.PreludeSessionError
 import so.prelude.android.session.dpop.FakeDPoPKeyStore
-import java.io.IOException
 import java.util.Base64
 
+/**
+ * [DPoPInterceptor] per-request proof shape: harvest, fresh JTI,
+ * htm/htu/iat claims, host override. Nonce-cache mechanics across
+ * requests live in [DPoPInterceptorNonceLifecycleTest]; the
+ * `use_dpop_nonce` 4xx retry path lives in
+ * [DPoPInterceptorChallengeTest].
+ */
 class DPoPInterceptorTest {
     private val domain = "api.example.com"
 
@@ -25,16 +30,15 @@ class DPoPInterceptorTest {
 
     private fun mkResponse(
         request: Request,
-        code: Int,
-        body: String = "{}",
+        code: Int = 200,
         nonce: String? = null,
     ): Response {
         val builder = Response.Builder()
             .request(request)
             .protocol(Protocol.HTTP_1_1)
             .code(code)
-            .message(if (code in 200..299) "OK" else "Error")
-            .body(body.toResponseBody("application/json".toMediaType()))
+            .message("OK")
+            .body("{}".toResponseBody("application/json".toMediaType()))
         if (nonce != null) builder.header(HttpHeader.DPOP_NONCE, nonce)
         return builder.build()
     }
@@ -43,6 +47,10 @@ class DPoPInterceptorTest {
     private fun decodePayload(proof: String): String =
         String(Base64.getUrlDecoder().decode(proof.split('.')[1]))
 
+    /** Extract the `jti` claim from a DPoP proof payload string. */
+    private fun jtiFrom(payload: String): String? =
+        Regex("\"jti\":\"([^\"]+)\"").find(payload)?.groupValues?.get(1)
+
     @Test
     fun happyPath_writesDPoPHeaderAndHarvestsNonce() = runTest {
         val store = FakeDPoPKeyStore()
@@ -50,7 +58,7 @@ class DPoPInterceptorTest {
         var seenRequest: Request? = null
         val send: SendFunction = { req ->
             seenRequest = req
-            mkResponse(req, 200, nonce = "fresh-1")
+            mkResponse(req, nonce = "fresh-1")
         }
 
         val response = interceptor.intercept(mkRequest(), send)
@@ -61,121 +69,46 @@ class DPoPInterceptorTest {
         response.close()
     }
 
+    /**
+     * RFC 9449 §4.2: each proof MUST carry a unique `jti`. Two
+     * sequential intercept calls must mint distinct identifiers.
+     */
     @Test
-    fun useDPoPNonce_4xx_retriesWithFreshNonce() = runTest {
+    fun proof_freshJtiPerIntercept() = runTest {
         val store = FakeDPoPKeyStore()
         val interceptor = DPoPInterceptor(store, domain)
-
         val proofs = mutableListOf<String>()
-        var calls = 0
         val send: SendFunction = { req ->
             proofs += req.header(HttpHeader.DPOP) ?: ""
-            calls += 1
-            if (calls == 1) {
-                mkResponse(req, 400, body = """{"code":"use_dpop_nonce"}""", nonce = "n1")
-            } else {
-                mkResponse(req, 200, nonce = "n2")
-            }
+            mkResponse(req)
         }
 
-        val response = interceptor.intercept(mkRequest(), send)
+        interceptor.intercept(mkRequest(), send).close()
+        interceptor.intercept(mkRequest(), send).close()
 
-        assertEquals(2, calls)
-        assertEquals(200, response.code)
-        // First proof has no nonce, retry has nonce "n1".
-        assertTrue("first proof should not include nonce", "\"nonce\"" !in decodePayload(proofs[0]))
-        assertTrue("retry proof must include the fresh nonce", "\"nonce\":\"n1\"" in decodePayload(proofs[1]))
-        // Final harvested nonce comes from the retry response.
-        assertEquals("n2", store.getNonce(domain))
-        response.close()
+        val jti1 = jtiFrom(decodePayload(proofs[0]))
+        val jti2 = jtiFrom(decodePayload(proofs[1]))
+        assertNotNull(jti1)
+        assertNotNull(jti2)
+        assertNotEquals("each proof must mint a fresh jti", jti1, jti2)
     }
 
-    /**
-     * Regression for the "persist nonce before retry" change.
-     * If the retry throws, the fresh nonce must still be persisted so
-     * the next request doesn't re-trigger the use_dpop_nonce challenge.
-     */
-    @Test
-    fun useDPoPNonce_retryThrows_freshNonceStillPersisted() = runTest {
-        val store = FakeDPoPKeyStore()
-        val interceptor = DPoPInterceptor(store, domain)
-
-        var calls = 0
-        val send: SendFunction = { req ->
-            calls += 1
-            if (calls == 1) {
-                mkResponse(req, 400, body = """{"code":"use_dpop_nonce"}""", nonce = "n1")
-            } else {
-                throw PreludeSessionError.Network(IOException("connection reset"))
-            }
-        }
-
-        val thrown = runCatching { interceptor.intercept(mkRequest(), send) }
-            .exceptionOrNull()
-
-        assertTrue("expected Network error, got $thrown", thrown is PreludeSessionError.Network)
-        assertEquals(2, calls)
-        // Even though the retry blew up, we kept the fresh nonce.
-        assertEquals("n1", store.getNonce(domain))
-    }
-
-    @Test
-    fun useDPoPNonce_withoutFreshNonceHeader_throwsExplicitly() {
-        val store = FakeDPoPKeyStore()
-        val interceptor = DPoPInterceptor(store, domain)
-        val send: SendFunction = { req ->
-            mkResponse(req, 400, body = """{"code":"use_dpop_nonce"}""", nonce = null)
-        }
-
-        val thrown = assertThrows(PreludeSessionError.Generic::class.java) {
-            runBlocking { interceptor.intercept(mkRequest(), send) }
-        }
-        assertEquals("missing_dpop_nonce_header", thrown.code)
-    }
-
-    @Test
-    fun nonNonceFailure_passesThrough_withoutRetry() = runTest {
-        val store = FakeDPoPKeyStore()
-        val interceptor = DPoPInterceptor(store, domain)
-        var calls = 0
-        val send: SendFunction = { req ->
-            calls += 1
-            mkResponse(req, 401, body = """{"code":"unauthorized"}""", nonce = "nx")
-        }
-
-        val response = interceptor.intercept(mkRequest(), send)
-
-        assertEquals(1, calls)
-        assertEquals(401, response.code)
-        // Still harvest nonce from the non-retry response.
-        assertEquals("nx", store.getNonce(domain))
-        response.close()
-    }
-
-    /**
-     * Regression: `hostOverride` previously forwarded host+port through
-     * OkHttp's `host()`, which rejects port-bearing strings. The override
-     * must accept `host:port` verbatim.
-     */
+    /** Regression: `host()` rejected `host:port`; the SDK accepts it verbatim. */
     @Test
     fun hostOverride_withPort_doesNotThrow_andShapesHtu() = runTest {
         val store = FakeDPoPKeyStore()
-        val interceptor = DPoPInterceptor(
-            keyStore = store,
-            domain = domain,
-            hostOverride = "sessdev.example.com:443",
-        )
+        val interceptor = DPoPInterceptor(store, domain, hostOverride = "sessdev.example.com:443")
         var seenRequest: Request? = null
         val send: SendFunction = { req ->
             seenRequest = req
-            mkResponse(req, 200)
+            mkResponse(req)
         }
 
         interceptor.intercept(mkRequest("https://127.0.0.1:3000/v1/me"), send).close()
 
         val payload = decodePayload(seenRequest!!.header(HttpHeader.DPOP)!!)
         assertTrue(
-            "htu should reflect the host:port override, was: $payload",
+            "htu should reflect host:port override, was: $payload",
             "\"htu\":\"https://sessdev.example.com:443/v1/me\"" in payload,
         )
     }
@@ -187,7 +120,7 @@ class DPoPInterceptorTest {
         var seenRequest: Request? = null
         val send: SendFunction = { req ->
             seenRequest = req
-            mkResponse(req, 200)
+            mkResponse(req)
         }
 
         interceptor.intercept(
@@ -202,36 +135,49 @@ class DPoPInterceptorTest {
         )
     }
 
+    /**
+     * Pins three RFC 9449 §4.2 claims that the existing tests only
+     * touch indirectly: `htm` mirrors the request method, `htu` keeps
+     * the scheme/host lowercase, and `iat` lands within a small
+     * window of `now`. A regression in any of these would survive the
+     * shape-only htu test that's already on file.
+     */
     @Test
-    fun proof_omitsNonceOnFirstRequestForFreshDomain() = runTest {
+    fun proof_carriesCorrectHtmHtuLowercase_andRecentIat() = runTest {
         val store = FakeDPoPKeyStore()
         val interceptor = DPoPInterceptor(store, domain)
         var seenRequest: Request? = null
         val send: SendFunction = { req ->
             seenRequest = req
-            mkResponse(req, 200)
+            mkResponse(req)
         }
 
-        interceptor.intercept(mkRequest(), send).close()
+        val before = System.currentTimeMillis() / 1000
+        // Mixed-case scheme/host on input — OkHttp normalises both
+        // segments to lowercase on parse, so the proof must carry the
+        // canonical form regardless of how the caller spelled it.
+        val request = Request.Builder()
+            .url("https://API.EXAMPLE.COM/v1/me")
+            .method("PATCH", "{}".toRequestBody("application/json".toMediaType()))
+            .build()
+        interceptor.intercept(request, send).close()
+        val after = System.currentTimeMillis() / 1000
 
         val payload = decodePayload(seenRequest!!.header(HttpHeader.DPOP)!!)
-        assertTrue("first proof must not contain a nonce", "\"nonce\"" !in payload)
-    }
-
-    @Test
-    fun emptyStoredNonce_isTreatedAsAbsent() = runTest {
-        val store = FakeDPoPKeyStore()
-        store.setNonce(domain, "") // wedged in directly; production path normalises this away
-        val interceptor = DPoPInterceptor(store, domain)
-        var seenRequest: Request? = null
-        val send: SendFunction = { req ->
-            seenRequest = req
-            mkResponse(req, 200)
-        }
-
-        interceptor.intercept(mkRequest(), send).close()
-
-        val payload = decodePayload(seenRequest!!.header(HttpHeader.DPOP)!!)
-        assertTrue("empty-string nonce must not be sent", "\"nonce\"" !in payload)
+        // htm mirrors the request method verbatim.
+        assertTrue("htm must echo the request method; was: $payload", "\"htm\":\"PATCH\"" in payload)
+        // htu is lowercased scheme/host (OkHttp normalisation).
+        assertTrue(
+            "htu must use lowercase scheme/host; was: $payload",
+            "\"htu\":\"https://api.example.com/v1/me\"" in payload,
+        )
+        // iat is within a small window of `now` (allow +/- 1s for
+        // the integer-second crossing between `before` and `after`).
+        val iat = Regex("\"iat\":(\\d+)").find(payload)?.groupValues?.get(1)?.toLong()
+        assertNotNull("iat claim must be present; was: $payload", iat)
+        assertTrue(
+            "iat must be within [before-1, after+1]; iat=$iat, before=$before, after=$after",
+            iat!! in (before - 1)..(after + 1),
+        )
     }
 }

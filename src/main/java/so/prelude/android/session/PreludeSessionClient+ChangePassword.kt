@@ -110,20 +110,35 @@ suspend fun PreludeSessionClient.changePassword(newPassword: RedactedString) {
         .method("POST", WIRE_JSON.encodeToString(body).toRequestBody(JSON_MEDIA_TYPE))
         .build()
 
-    // `auto-refresh` outermost so a 401 driven by an expired access
-    // token re-runs the request with a fresh bearer; DPoP innermost
-    // so the proof signs the FINAL outgoing headers (including the
-    // refreshed bearer). Same composition as `requestStepUp` /
-    // `revokeSessions` and every other protected route.
-    httpClient.sendExpectingNoBody(
-        request = request,
-        interceptors = listOf(autoRefreshInterceptor, dpopInterceptor),
-    )
+    // No DPoP on `/me/password/reset`: the server runs only the
+    // bearer-checking authorization middleware on this route — the
+    // access token + `prld:pwd:write` scope is the entire credential.
+    // Sending a proof would be ignored at best; on strict proxies it
+    // is dead weight that can short-circuit the request before the
+    // server can return its real status. The auto-refresh path still
+    // recovers a stale bearer: a 401 here triggers [refresh], which
+    // signs `/refresh` with [dpopInterceptor] itself.
+    //
+    // Clear the step-up handle on every outcome via `finally`: the
+    // request was driven by `prld:pwd:write` either way, and leaving
+    // a stale challenge visible after a failed reset is no more
+    // useful than after a successful one. Caller retries by re-
+    // requesting step-up — the unscoped flow is the same.
+    try {
+        httpClient.sendExpectingNoBody(
+            request = request,
+            interceptors = listOf(autoRefreshInterceptor),
+        )
+    } finally {
+        setActiveStepUp(null)
+    }
 
-    // Drop `prld:pwd:write` locally so a leaked access token can't
-    // change the password again without re-stepping up. The server
-    // already consumed the scope on the successful reset above; this
-    // ensures the SDK's local view matches.
+    // Post-success only: drop `prld:pwd:write` locally so a leaked
+    // access token can't change the password again without re-
+    // stepping up. The server already consumed the scope on the
+    // successful reset above; this ensures the SDK's local view
+    // matches. Skipped on failure — the scope wasn't consumed
+    // server-side, so the cache should keep reflecting that.
     dropConsumedScopeAfterChangePassword()
 }
 

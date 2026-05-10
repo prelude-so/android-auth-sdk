@@ -5,6 +5,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okio.Buffer
+import so.prelude.android.session.http.LoginWithPasswordRequestBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -536,6 +537,22 @@ class PasswordClientTest {
         val s = RedactedString("hunter2")
         assertEquals("<redacted>", s.toString())
         assertEquals("hunter2", s.value)
+    }
+
+    @Test
+    fun loginWithPasswordRequestBody_toString_redactsThePassword() {
+        // The wire DTO carries the plaintext (the server has to verify
+        // it) but its `toString` must not leak — a stray `Log.d` of
+        // the request struct or a coroutine error path that dumps it
+        // would otherwise surface the plaintext in any logging
+        // pipeline tailing the SDK.
+        val body = LoginWithPasswordRequestBody(
+            identifier = email,
+            password = "super-secret",
+        )
+        val rendered = body.toString()
+        assertFalse("toString must not leak plaintext", rendered.contains("super-secret"))
+        assertTrue("toString must mark the redacted slot", rendered.contains("<redacted>"))
     }
 
     // MARK: - Helpers

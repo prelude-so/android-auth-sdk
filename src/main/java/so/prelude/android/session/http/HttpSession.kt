@@ -33,11 +33,20 @@ internal class OkHttpSession(
     // a `verification` cookie that `/v1/session/otp/check` reads. The
     // bare `OkHttpClient()` default is `CookieJar.NO_COOKIES`, which
     // silently drops the cookie and turns the second hop into a 401.
-    // Tests inject a stub client and pick their own jar.
-    private val client: OkHttpClient = OkHttpClient.Builder()
-        .cookieJar(InMemoryCookieJar())
-        .build(),
+    // Tests inject a stub session and skip OkHttp entirely.
+    private val client: OkHttpClient = defaultClient(InMemoryCookieJar()),
 ) : HttpSession {
+    internal companion object {
+        /**
+         * Default OkHttp client wired to share [cookieJar] so the SDK
+         * can wipe per-domain cookies on logout / revoke.
+         */
+        internal fun defaultClient(cookieJar: InMemoryCookieJar): OkHttpClient =
+            OkHttpClient.Builder()
+                .cookieJar(cookieJar)
+                .build()
+    }
+
     override suspend fun perform(request: Request): Response =
         suspendCancellableCoroutine { continuation ->
             val call = client.newCall(request)

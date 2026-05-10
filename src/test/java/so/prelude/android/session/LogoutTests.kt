@@ -11,10 +11,11 @@ import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import so.prelude.android.session.dpop.DPoPKey
+import so.prelude.android.session.dpop.DPoPKeyStoreError
 import so.prelude.android.session.dpop.FakeDPoPKey
 import so.prelude.android.session.http.HttpHeader
 import so.prelude.android.session.store.AccessTokenEntry
@@ -23,6 +24,7 @@ import so.prelude.android.session.store.FailingRefreshTokenStorage
 import so.prelude.android.session.store.InMemoryAccessTokenStorage
 import so.prelude.android.session.store.InMemoryRefreshTokenStorage
 import so.prelude.android.session.store.RefreshTokenRecord
+import java.util.Base64
 
 /**
  * Regression tests for the concurrency and robustness invariants of
@@ -73,7 +75,7 @@ class LogoutTests {
         )
     }
 
-    /** Assert that all four domain-scoped stores have been cleared. */
+    /** Assert every domain-scoped store + the in-memory step-up handle is cleared. */
     private fun Fixture.assertWiped() {
         assertNull("DPoP key not wiped", keyStore.get(domain))
         assertNull("DPoP nonce not wiped", keyStore.getNonce(domain))
@@ -82,6 +84,7 @@ class LogoutTests {
             "Access token cache not wiped",
             accessTokenCache.getWithoutExpirationCheck(domain),
         )
+        assertNull("activeStepUp not cleared", client.activeStepUp)
     }
 
     private fun refreshOk(refreshToken: String = "refresh-v2", expiresInSec: Long = 3_600) =
@@ -111,6 +114,56 @@ class LogoutTests {
 
         assertEquals(1, fixture.http.requestCount("/v1/session/revoke"))
         fixture.assertWiped()
+    }
+
+    @Test
+    fun logout_wipesAllStoresBeforeRevokeReturns() = runBlocking {
+        // Wipe-before-network: a successful `/revoke` is the easy
+        // case. The dangerous case is a `/revoke` that hangs or fails
+        // — the stores must already be empty by the time the network
+        // call is in flight, so a stuck network can't leave a stale
+        // credential live on the device.
+        val fixture = Fixture.make()
+        fixture.prePopulate()
+        fixture.client.setActiveStepUp(
+            PreludeStepUpChallenge.blocked(requestedScope = "prld:pwd:write"),
+        )
+        fixture.http.install("/v1/session/revoke", StubHttpSession.Canned(statusCode = 204))
+        fixture.http.installGate("/v1/session/revoke")
+
+        coroutineScope {
+            val caller = async { fixture.client.logout() }
+            // Wait for /revoke to suspend at the gate.
+            waitUntil { fixture.http.requestCount("/v1/session/revoke") >= 1 }
+            // /revoke hasn't returned yet — but every store must
+            // already be wiped.
+            fixture.assertWiped()
+            fixture.http.releaseGate("/v1/session/revoke")
+            caller.await()
+        }
+    }
+
+    @Test
+    fun logout_revokeProof_carriesCurrentDPoPNonce() = runBlocking {
+        // /revoke is signed inline (not via DPoPInterceptor) because
+        // the wipe runs first; the proof must still pull the
+        // most-recently-cached nonce so the server can validate it
+        // without forcing a fresh challenge round-trip on a hop that
+        // can't retry — the keystore has been wiped by then.
+        val fixture = Fixture.make()
+        fixture.prePopulate(nonce = "logout-nonce-abc")
+        fixture.http.install("/v1/session/revoke", StubHttpSession.Canned(statusCode = 204))
+
+        fixture.client.logout()
+
+        val proof = fixture.http.requestsFor("/v1/session/revoke").single()
+            .header(HttpHeader.DPOP)
+        assertNotNull(proof)
+        val payload = String(Base64.getUrlDecoder().decode(proof!!.split('.')[1]))
+        assertTrue(
+            "revoke proof must carry the cached DPoP nonce; was: $payload",
+            "\"nonce\":\"logout-nonce-abc\"" in payload,
+        )
     }
 
     @Test
@@ -377,6 +430,44 @@ class LogoutTests {
         assertEquals(1, fixture.http.requestCount("/v1/session/revoke"))
     }
 
+    @Test
+    fun logout_signingFailureDuringRevoke_silentlyDegrades_localWipeStillCompletes() = runBlocking {
+        // `KeyPermanentlyInvalidatedException` (and any other
+        // signing failure surfaced via [DPoPKeyStoreError]) is
+        // unrecoverable on this hardware: there is no path to
+        // attempt `/revoke` without the original DPoP private key.
+        // The local wipe still happened, so the device cannot use
+        // this session, and the server session expires on its own
+        // via TTL — surfacing the error to the caller would only
+        // be noise. Pins the silent-degrade contract.
+        val fixture = Fixture.make()
+        fixture.prePopulate()
+        // Replace the materialised key with one that throws on
+        // sign — mimics the AVD-rollback / lock-screen-change
+        // shape that surfaces in production logcat as
+        // "ECDSA signing failed: Key permanently invalidated".
+        fixture.keyStore.setKey(
+            fixture.domain,
+            object : DPoPKey {
+                override fun exportPublicJwk(): Map<String, String> =
+                    FakeDPoPKey().exportPublicJwk()
+                override fun signES256(data: ByteArray): ByteArray =
+                    throw DPoPKeyStoreError.SigningFailed(
+                        IllegalStateException("Key permanently invalidated"),
+                    )
+            },
+        )
+        fixture.http.install("/v1/session/revoke", StubHttpSession.Canned(statusCode = 204))
+
+        // Must not throw — the signing error is silenced.
+        fixture.client.logout()
+
+        // /revoke never fires (no proof to attach).
+        assertEquals(0, fixture.http.requestCount("/v1/session/revoke"))
+        // Local wipe still landed: stores are empty, activeStepUp clear.
+        fixture.assertWiped()
+    }
+
     // MARK: - Slot reuse
 
     @Test
@@ -545,5 +636,24 @@ class LogoutTests {
             delay(5)
         }
         throw AssertionError("timed out waiting for condition (after ${timeoutMs}ms)")
+    }
+
+    @Test
+    fun logout_clearsActiveStepUp() = runBlocking {
+        // A stale step-up handle that survives logout would let a
+        // post-logout observer believe a flow is still in progress.
+        val fixture = Fixture.make()
+        fixture.prePopulate()
+        fixture.http.install("/v1/session/revoke", StubHttpSession.Canned(statusCode = 204))
+        fixture.client.setActiveStepUp(
+            PreludeStepUpChallenge.blocked(requestedScope = "prld:pwd:write"),
+        )
+
+        fixture.client.logout()
+
+        assertNull(
+            "logout must clear activeStepUp",
+            fixture.client.activeStepUp,
+        )
     }
 }

@@ -72,4 +72,16 @@ internal class InMemoryCookieJar : CookieJar {
             bucket.filter { it.matches(url) }.toList()
         }
     }
+
+    /**
+     * Wipe every cookie scoped to [host]. Called from
+     * `clearAllStores` so a logout / revoke leaves no
+     * server-set markers (e.g. `verification`, `did`) behind for
+     * the next login flow on the same client. Idempotent — a host
+     * with no bucket is a no-op.
+     */
+    internal fun clear(host: String) {
+        val lock = locks[host] ?: return
+        lock.withLock { byHost[host]?.clear() }
+    }
 }

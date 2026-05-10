@@ -2,8 +2,11 @@ package so.prelude.android.session
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -30,6 +33,7 @@ import so.prelude.android.session.store.SharedPreferencesRefreshTokenStorage
 import java.net.URL
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -113,6 +117,19 @@ class PreludeSessionClient internal constructor(
     internal val inflightLogout = Inflight<Unit>()
 
     /**
+     * Serialises [revokeSessions] callers. Unlike [inflightLogout] we
+     * don't dedup-coalesce: callers can pass different
+     * [PreludeRevokeTarget]s, so two concurrent callers must not share
+     * one round-trip's outcome (the joiner's intent would never fire).
+     * A plain mutex serialises them instead — concurrent same-target
+     * callers (e.g. a double-tapped UI button) run sequentially; the
+     * second observes whatever state the first left, which is the
+     * honest answer when revoking-the-calling-session has already
+     * succeeded once.
+     */
+    internal val revokeMutex = Mutex()
+
+    /**
      * Monotonic counter bumped by [logout]. [doRefresh] and
      * [finalizeLogin] capture it at entry and bail before persisting
      * rotated tokens if logout moved the counter mid-flight — a
@@ -126,6 +143,20 @@ class PreludeSessionClient internal constructor(
      * a concurrent refresh's check without a separate lock.
      */
     internal val sessionEpoch: AtomicLong = AtomicLong(0)
+
+    // Tracks the most-recently-issued step-up handle so callers can
+    // observe in-progress flows without holding a reference. Cleared
+    // on completion, on `changePassword` success, and on `logout` so
+    // a stale handle can't leak across an explicit reset.
+    private val _activeStepUp: AtomicReference<PreludeStepUpChallenge?> = AtomicReference(null)
+
+    /** Most-recently-issued step-up challenge, or `null` when none is in flight. */
+    val activeStepUp: PreludeStepUpChallenge?
+        get() = _activeStepUp.get()
+
+    internal fun setActiveStepUp(challenge: PreludeStepUpChallenge?) {
+        _activeStepUp.set(challenge)
+    }
 
     init {
         // Warm the in-memory cache from persistent storage so a cold
@@ -161,7 +192,12 @@ class PreludeSessionClient internal constructor(
         baseUrl = baseUrl,
         hostOverride = hostOverride,
         timeout = timeout,
-        httpClient = HttpClient(),
+        // Share the cookie jar between OkHttp and the SDK so
+        // logout / revoke can wipe per-domain cookies — server-set
+        // markers (`verification`, `did`) outliving the session
+        // would let a post-logout observer of the jar see a flow
+        // that's no longer valid.
+        httpClient = HttpClient.withCookieJar(),
         keyStore = newDefaultKeyStore(context, baseUrl, hostOverride),
         refreshTokenStore = newDefaultRefreshStore(context, baseUrl, hostOverride),
         accessTokenCache = newDefaultAccessCache(context, baseUrl, hostOverride),
@@ -387,10 +423,21 @@ class PreludeSessionClient internal constructor(
     internal fun buildSessionRequest(
         path: String,
         method: String = "POST",
+    ): Request.Builder = buildSessionRequest(sessionUrl(path).build(), method)
+
+    /**
+     * Builder-on-URL overload of [buildSessionRequest] for routes that
+     * attach query parameters — callers compose an [HttpUrl] via
+     * [sessionUrl] and pass it in directly, instead of the original
+     * "build path, then `.url()` it back" pattern that parsed the URL
+     * twice and read like a workaround.
+     */
+    internal fun buildSessionRequest(
+        url: HttpUrl,
+        method: String = "POST",
     ): Request.Builder {
-        val sessionPath = baseUrl.toString().trimEnd('/') + "/v1/session/$path"
         val builder = Request.Builder()
-            .url(sessionPath)
+            .url(url)
             .header(HttpHeader.ACCEPT, "application/json")
         if (method == "POST") {
             builder
@@ -407,6 +454,15 @@ class PreludeSessionClient internal constructor(
         }
         return builder
     }
+
+    /**
+     * `HttpUrl.Builder` for `<baseUrl>/v1/session/<path>` — the single
+     * place the session base URL is composed. Callers that need to
+     * attach query parameters reach for this; callers that don't go
+     * through [buildSessionRequest] which delegates here.
+     */
+    internal fun sessionUrl(path: String): HttpUrl.Builder =
+        (baseUrl.toString().trimEnd('/') + "/v1/session/$path").toHttpUrl().newBuilder()
 
     /**
      * Dispatch anti-fraud signals when a [signalsDispatcher] is
