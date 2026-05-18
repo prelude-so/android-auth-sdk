@@ -1,12 +1,37 @@
 # Changelog
 
-Notable changes to the Prelude Android Session SDK (`so.prelude.android:session-sdk`).
+Notable changes to the Prelude Android Auth SDK (`so.prelude.android:auth-sdk`).
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.3.0] - 2026-05-18
+
+### Changed
+- **Renamed SDK:** `so.prelude.android:session-sdk` is now
+  `so.prelude.android:auth-sdk`. The package moved from
+  `so.prelude.android.session` to `so.prelude.android.auth`,
+  `PreludeSessionClient` → `PreludeAuthClient`, and
+  `PreludeSessionError` → `PreludeAuthError`. Method names
+  (`listSessions`, `revokeSessions`, …) are unchanged.
+- **Renamed internal storage namespaces:** SharedPreferences
+  files and AndroidKeystore aliases moved from
+  `so.prelude.session.*` to `so.prelude.auth.*` (access tokens,
+  refresh tokens, DPoP nonces, DPoP keypair aliases).
+
+### Fixed
+- Six backend error codes that previously fell through to
+  `Generic(code, message)` are now mapped to their typed cases:
+  `use_dpop_nonce` → `Unauthorized`;
+  `invalid_verify_configuration`, `suspended_account`,
+  `invalid_api_key` → `Forbidden`;
+  `email_domain_not_verified`, `insufficient_balance` →
+  `BadRequest`.
 
 ## [0.2.0] - 2026-05-09
+
+> Last release published under the old
+> `so.prelude.android:session-sdk` coordinate. See the 0.3.0
+> entry above for the rename.
 
 ### Added
 - `listSessions` (paged) and `revokeSessions` for managing the
@@ -39,7 +64,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 - Server 5xx errors now surface as
-  `PreludeSessionError.InternalServerError` (the backend emits
+  `PreludeAuthError.InternalServerError` (the backend emits
   code `internal`; the SDK previously expected
   `internal_server_error` and fell through to `Generic`).
 - Step-up state-machine codes (`step_not_completed`,
@@ -52,7 +77,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 - POM metadata: `url`, `scm.url`, `scm.connection`, and
   `scm.developerConnection` now correctly reference
-  `prelude-so/android-session-sdk`. The 0.1.0 release pointed at
+  `prelude-so/android-auth-sdk`. The 0.1.0 release pointed at
   `prelude-so/android-sdk` (the signals SDK repo) by mistake.
 
 ## [0.1.0] - 2026-04-30
