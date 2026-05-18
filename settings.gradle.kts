@@ -20,4 +20,4 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "PreludeSession"
+rootProject.name = "PreludeAuth"

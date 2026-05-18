@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "so.prelude.android.session"
+    namespace = "so.prelude.android.auth"
     compileSdk = 34
 
     defaultConfig {
@@ -40,7 +40,7 @@ dependencies {
     // Anti-fraud signals dispatch is provided by the Prelude Android
     // SDK; wired as a project reference at dev time and swapped for
     // the published `so.prelude.android:sdk` coordinate at release.
-    implementation("so.prelude.android:sdk:0.5.0")
+    implementation("so.prelude.android:sdk:0.5.2")
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

@@ -1,16 +1,16 @@
 # Readme
 ### Usage
 
-The Android Session SDK lets you sign users into your Android app and manages the resulting session — tokens, refresh, logout — against the Prelude session API.
+The Android Auth SDK lets you sign users into your Android app and manages the resulting session — tokens, refresh, logout — against the Prelude Auth API.
 
 It is provided as a regular Maven artifact that you can use as a normal dependency in your Android application, just add it as an implementation dependency:
 
 ```
 (Kts)
-implementation("so.prelude.android:session-sdk:0.2.0")
+implementation("so.prelude.android:auth-sdk:0.3.0")
 
 (Groovy)
-implementation 'so.prelude.android:session-sdk:0.2.0'
+implementation 'so.prelude.android:auth-sdk:0.3.0'
 ```
 
 #### Email OTP login
@@ -18,11 +18,11 @@ implementation 'so.prelude.android:session-sdk:0.2.0'
 Send a one-time code to the user's email address, then submit the code they entered. The SDK persists the resulting tokens in app-private storage.
 
 ```kotlin
-import so.prelude.android.session.*
+import so.prelude.android.auth.*
 import java.net.URL
 
-// Point the client at your project's Prelude session endpoint.
-val client = PreludeSessionClient(
+// Point the client at your project's Prelude Auth endpoint.
+val client = PreludeAuthClient(
     context = applicationContext,
     baseUrl = URL("https://<your-app>.session.prelude.dev"),
 )
@@ -126,11 +126,11 @@ Revoking the current session (`All`, `Mine`, or its specific id) also wipes the 
 ```kotlin
 import kotlin.time.Duration.Companion.seconds
 
-val client = PreludeSessionClient(
+val client = PreludeAuthClient(
     context = applicationContext,
     baseUrl = URL("https://<your-app>.session.prelude.dev"),
     timeout = 10.seconds,
 )
 ```
 
-Each Prelude project has its own session endpoint URL — use the production URL in production, and a custom URL for staging or local development.
+Each Prelude project has its own Auth endpoint URL — use the production URL in production, and a custom URL for staging or local development.
