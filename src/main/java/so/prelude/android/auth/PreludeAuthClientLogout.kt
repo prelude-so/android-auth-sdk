@@ -118,6 +118,10 @@ private suspend fun PreludeAuthClient.doLogout() {
         runCatching { keyStore.getNonce(domain) }
             .rethrowingCancellation()
             .getOrNull()
+    val dpopSkewMs: Long =
+        runCatching { keyStore.getClockSkewMs(domain) }
+            .rethrowingCancellation()
+            .getOrNull() ?: 0L
     val refreshToken: String? =
         runCatching {
             refreshTokenStore.get(domain)?.refreshToken
@@ -160,7 +164,7 @@ private suspend fun PreludeAuthClient.doLogout() {
     // act on.
     val request =
         runCatching {
-            buildRevokeRequest(dpopKey, dpopNonce, refreshToken)
+            buildRevokeRequest(dpopKey, dpopNonce, dpopSkewMs, refreshToken)
         }.rethrowingCancellation().getOrNull()
             ?: run {
                 wipeError?.let { throw it }
@@ -194,6 +198,7 @@ private suspend fun PreludeAuthClient.doLogout() {
 private fun PreludeAuthClient.buildRevokeRequest(
     dpopKey: DPoPKey,
     dpopNonce: String?,
+    dpopSkewMs: Long,
     refreshToken: String,
 ): Request {
     val request =
@@ -207,6 +212,7 @@ private fun PreludeAuthClient.buildRevokeRequest(
             method = request.method,
             url = dpopHtu(request, hostOverride),
             nonce = dpopNonce,
+            clockSkewMs = dpopSkewMs,
         )
     return request.newBuilder().header(HttpHeader.DPOP, proof).build()
 }
@@ -246,14 +252,15 @@ internal fun PreludeAuthClient.clearAllStores() {
         }
     }
 
-    // [AndroidKeystoreStore.delete] also wipes the per-domain nonce,
-    // but a failure during the keystore op would skip that step.
-    // Calling [deleteNonce] explicitly afterwards preserves the
-    // four-delete contract so a partial keystore failure can't leave a
-    // nonce dangling. The redundant call on the success path is a
-    // no-op.
+    // [AndroidKeystoreStore.delete] also wipes the per-domain nonce
+    // and clock skew, but a failure during the keystore op would
+    // skip that step. Calling [deleteNonce] / [deleteClockSkewMs]
+    // explicitly afterwards preserves the wipe contract so a
+    // partial keystore failure can't leave either dangling. The
+    // redundant calls on the success path are no-ops.
     attempt { keyStore.delete(domain) }
     attempt { keyStore.deleteNonce(domain) }
+    attempt { keyStore.deleteClockSkewMs(domain) }
     attempt { refreshTokenStore.delete(domain) }
     attempt { accessTokenCache.clear(domain) }
     // Wipe per-host cookies (`verification`, `did`, …). Keyed on

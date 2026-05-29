@@ -103,6 +103,58 @@ class DPoPProofTest {
     }
 
     @Test
+    fun payload_iat_appliesPositiveClockSkewMs() {
+        val now = Instant.parse("2026-01-15T12:00:00Z")
+        val proof =
+            createDPoPProof(
+                realKey(),
+                method = "POST",
+                url = "https://api.example.com/v1/login",
+                now = now,
+                clockSkewMs = 30_000L,
+            )
+        val payload = decodeSegment(proof.split('.')[1])
+        assertEquals(now.epochSecond + 30, payload["iat"]?.jsonPrimitive?.long)
+    }
+
+    @Test
+    fun payload_iat_appliesNegativeClockSkewMs() {
+        val now = Instant.parse("2026-01-15T12:00:00Z")
+        val proof =
+            createDPoPProof(
+                realKey(),
+                method = "POST",
+                url = "https://api.example.com/v1/login",
+                now = now,
+                clockSkewMs = -45_000L,
+            )
+        val payload = decodeSegment(proof.split('.')[1])
+        assertEquals(now.epochSecond - 45, payload["iat"]?.jsonPrimitive?.long)
+    }
+
+    /**
+     * `Math.floorDiv` (not truncating division) keeps the iat
+     * non-overestimating when the corrected wall clock falls on a
+     * sub-second tick before a whole second — a positive raw value
+     * truncated toward zero would equal `floor`, but for negatives
+     * `(-1500 / 1000) == -1` whereas `floorDiv(-1500, 1000) == -2`.
+     */
+    @Test
+    fun payload_iat_negativeSubSecondSkewFloorsTowardEarlier() {
+        val now = Instant.parse("2026-01-15T12:00:00Z")
+        val proof =
+            createDPoPProof(
+                realKey(),
+                method = "POST",
+                url = "https://api.example.com/v1/login",
+                now = now,
+                clockSkewMs = -500L,
+            )
+        val payload = decodeSegment(proof.split('.')[1])
+        assertEquals(now.epochSecond - 1, payload["iat"]?.jsonPrimitive?.long)
+    }
+
+    @Test
     fun payload_jtiCanBeOverridden() {
         val proof =
             createDPoPProof(

@@ -6,7 +6,6 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -87,33 +86,6 @@ class OtpClientStartTest {
             assertEquals("cfg-1", body["login_config_id"]!!.jsonPrimitive.content)
             Unit
         }
-
-    @Test
-    fun startOTPLogin_dispatcherFailure_wrapsAsSignalsDispatchFailed_andSkipsHttp() {
-        val fixture = Fixture.make(signalsDispatcher = { error("boom") })
-        fixture.http.install(
-            "/v1/session/otp",
-            StubHttpSession.Canned.json("{}", statusCode = 204),
-        )
-
-        val thrown =
-            assertThrows(PreludeAuthError.SignalsDispatchFailed::class.java) {
-                runBlocking {
-                    fixture.client.startOTPLogin(
-                        StartOTPLoginOptions(identifier = OtpFixtures.emailIdentifier),
-                    )
-                }
-            }
-        // Underlying dispatcher exception preserved so diagnostic UIs
-        // can drill into the real failure.
-        assertTrue(
-            "expected IllegalStateException cause, got ${thrown.cause}",
-            thrown.cause is IllegalStateException,
-        )
-        // HTTP must not have fired — silently shipping a login without
-        // anti-fraud coverage would be the worst possible failure mode.
-        assertTrue(fixture.http.requestsFor("/v1/session/otp").isEmpty())
-    }
 
     @Test
     fun startOTPLogin_rateLimited_mapsToStructuredError() {

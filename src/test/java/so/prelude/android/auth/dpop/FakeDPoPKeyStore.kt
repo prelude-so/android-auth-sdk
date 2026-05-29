@@ -28,6 +28,7 @@ internal class FakeDPoPKey(
 internal class FakeDPoPKeyStore : DPoPKeyStore {
     private val keys = ConcurrentHashMap<String, DPoPKey>()
     private val nonces = ConcurrentHashMap<String, String>()
+    private val clockSkewsMs = ConcurrentHashMap<String, Long>()
     var keyFactory: () -> DPoPKey = ::FakeDPoPKey
 
     override fun get(domain: String): DPoPKey? = keys[domain]
@@ -37,6 +38,7 @@ internal class FakeDPoPKeyStore : DPoPKeyStore {
     override fun delete(domain: String) {
         keys.remove(domain)
         nonces.remove(domain)
+        clockSkewsMs.remove(domain)
     }
 
     override fun getNonce(domain: String): String? = nonces[domain]
@@ -50,6 +52,19 @@ internal class FakeDPoPKeyStore : DPoPKeyStore {
 
     override fun deleteNonce(domain: String) {
         nonces.remove(domain)
+    }
+
+    override fun getClockSkewMs(domain: String): Long? = clockSkewsMs[domain]
+
+    override fun setClockSkewMs(
+        domain: String,
+        skewMs: Long,
+    ) {
+        clockSkewsMs[domain] = skewMs
+    }
+
+    override fun deleteClockSkewMs(domain: String) {
+        clockSkewsMs.remove(domain)
     }
 
     /** Pre-populate without going through `getOrCreate` (e.g. for the

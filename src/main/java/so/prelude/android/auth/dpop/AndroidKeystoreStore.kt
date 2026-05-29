@@ -24,6 +24,7 @@ import kotlin.concurrent.withLock
  */
 internal class AndroidKeystoreStore(
     private val nonceStore: DPoPNonceStore,
+    private val clockSkewStore: DPoPClockSkewStore,
     tierProvider: () -> KeystoreTier = KeystoreTier.Companion::detect,
 ) : DPoPKeyStore {
     /**
@@ -63,6 +64,7 @@ internal class AndroidKeystoreStore(
                 throw DPoPKeyStoreError.KeystoreFailure(e)
             }
             nonceStore.delete(domain)
+            clockSkewStore.delete(domain)
         }
 
     override fun getNonce(domain: String): String? = nonceStore.get(domain)
@@ -73,6 +75,15 @@ internal class AndroidKeystoreStore(
     ) = nonceStore.set(domain, nonce)
 
     override fun deleteNonce(domain: String) = nonceStore.delete(domain)
+
+    override fun getClockSkewMs(domain: String): Long? = clockSkewStore.get(domain)
+
+    override fun setClockSkewMs(
+        domain: String,
+        skewMs: Long,
+    ) = clockSkewStore.set(domain, skewMs)
+
+    override fun deleteClockSkewMs(domain: String) = clockSkewStore.delete(domain)
 
     private fun findKey(domain: String): DPoPKey? {
         val alias = aliasFor(domain)

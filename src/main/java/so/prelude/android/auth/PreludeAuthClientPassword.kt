@@ -39,10 +39,9 @@ import so.prelude.android.auth.http.WIRE_JSON
  *
  * When a [PreludeSignalsDispatcher] is configured, the helper dispatches
  * a fresh signals envelope and attaches the resulting `dispatch_id`
- * to the request body. Dispatcher failures surface as
- * [PreludeAuthError.SignalsDispatchFailed] (wrapping the underlying
- * cause) — silently shipping a login without anti-fraud coverage would
- * be the worst possible failure mode.
+ * to the request body. Dispatcher failures are swallowed and logged;
+ * the login proceeds without `dispatch_id` so anti-fraud coverage
+ * degrades gracefully rather than blocking authentication.
  *
  * Distinguishes [PreludeAuthError.InvalidPassword] (the password
  * failed the server's policy — fix is a stronger password) from

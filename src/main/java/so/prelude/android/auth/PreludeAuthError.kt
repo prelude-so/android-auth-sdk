@@ -154,17 +154,6 @@ sealed class PreludeAuthError(
         cause: Throwable,
     ) : PreludeAuthError("CryptoFailure: ${cause.message}", cause)
 
-    /**
-     * Anti-fraud signals dispatch failed. Wraps the underlying
-     * [so.prelude.android.auth.signals.PreludeSignalsDispatcher]
-     * failure (network, invalid key, malformed response) so callers
-     * see a structured [PreludeAuthError] rather than a leaked
-     * implementation exception.
-     */
-    class SignalsDispatchFailed(
-        cause: Throwable,
-    ) : PreludeAuthError("SignalsDispatchFailed: ${cause.message}", cause)
-
     /** Error code not recognised by the SDK. */
     class Generic(
         val code: String,
