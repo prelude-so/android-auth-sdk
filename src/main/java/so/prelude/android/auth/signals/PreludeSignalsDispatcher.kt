@@ -11,8 +11,11 @@ package so.prelude.android.auth.signals
 fun interface PreludeSignalsDispatcher {
     /**
      * Dispatch a fresh signals payload and return its server-assigned
-     * `dispatch_id`, or `null` to skip. Throw on genuine failures so
-     * callers don't silently lose anti-fraud coverage.
+     * `dispatch_id`, or `null` to skip. Implementations may throw on
+     * failure (network, timeout, server error) — the SDK swallows
+     * those errors, logs them, and proceeds with the login flow
+     * without a `dispatch_id`. Anti-fraud coverage degrades gracefully
+     * rather than blocking authentication.
      */
     suspend fun dispatch(): String?
 }

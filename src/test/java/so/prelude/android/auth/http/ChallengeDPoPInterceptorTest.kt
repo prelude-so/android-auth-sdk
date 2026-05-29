@@ -143,6 +143,38 @@ class ChallengeDPoPInterceptorTest {
         }
 
     /**
+     * Persisted clock skew on the keystore must flow through to
+     * the challenge proof's `iat`. The challenge interceptor
+     * reads the same field the regular DPoP retry path persisted
+     * earlier.
+     */
+    @Test
+    fun keyAndJtiPresent_appliesPersistedClockSkew() =
+        runTest {
+            val store = FakeDPoPKeyStore()
+            store.setKey(domain, FakeDPoPKey())
+            val skewMs = 45_000L
+            store.setClockSkewMs(domain, skewMs)
+            val interceptor = ChallengeDPoPInterceptor(store, domain, challengeToken("j"))
+
+            var seenRequest: Request? = null
+            val send: SendFunction = { req ->
+                seenRequest = req
+                mkResponse(req)
+            }
+
+            interceptor.intercept(mkRequest(), send).close()
+
+            val payload = decodePayload(seenRequest!!.header(HttpHeader.DPOP)!!)
+            val iat = Regex("\"iat\":(\\d+)").find(payload)!!.groupValues[1].toLong()
+            val expectedSec = (System.currentTimeMillis() + skewMs) / 1000
+            assertTrue(
+                "challenge proof iat $iat must carry the persisted skew (expected≈$expectedSec)",
+                kotlin.math.abs(iat - expectedSec) <= 3,
+            )
+        }
+
+    /**
      * Regression: same host:port override path that broke
      * [DPoPInterceptor]. The challenge interceptor uses the same
      * helper, so the fix is shared but worth pinning here too.

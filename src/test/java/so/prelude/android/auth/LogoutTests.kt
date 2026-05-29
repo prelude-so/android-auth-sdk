@@ -80,6 +80,7 @@ class LogoutTests {
     private fun Fixture.assertWiped() {
         assertNull("DPoP key not wiped", keyStore.get(domain))
         assertNull("DPoP nonce not wiped", keyStore.getNonce(domain))
+        assertNull("DPoP clock skew not wiped", keyStore.getClockSkewMs(domain))
         assertNull("Refresh token not wiped", refreshTokenStore.get(domain))
         assertNull(
             "Access token cache not wiped",
@@ -121,6 +122,25 @@ class LogoutTests {
             fixture.client.logout()
 
             assertEquals(1, fixture.http.requestCount("/v1/session/revoke"))
+            fixture.assertWiped()
+        }
+
+    /**
+     * Persisted clock skew must be wiped alongside the other
+     * domain-scoped stores. Without this, a stale correction from
+     * a previous session would leak into the next login's first
+     * proof.
+     */
+    @Test
+    fun logout_wipesPersistedClockSkew() =
+        runBlocking {
+            val fixture = Fixture.make()
+            fixture.prePopulate()
+            fixture.keyStore.setClockSkewMs(fixture.domain, 30_000L)
+            fixture.http.install("/v1/session/revoke", StubHttpSession.Canned(statusCode = 204))
+
+            fixture.client.logout()
+
             fixture.assertWiped()
         }
 
@@ -176,6 +196,39 @@ class LogoutTests {
             assertTrue(
                 "revoke proof must carry the cached DPoP nonce; was: $payload",
                 "\"nonce\":\"logout-nonce-abc\"" in payload,
+            )
+        }
+
+    /**
+     * `/revoke` is signed inline (bypassing the DPoP interceptor),
+     * so it must read the persisted clock skew from the snapshot
+     * just like the interceptor does. Without this the proof's
+     * `iat` stays uncorrected and a clock-drifted device gets
+     * rejected — the exact failure mode this PR fixes elsewhere.
+     */
+    @Test
+    fun logout_revokeProof_carriesClockSkewCorrection() =
+        runBlocking {
+            val fixture = Fixture.make()
+            fixture.prePopulate(nonce = "logout-nonce-abc")
+            val skewMs = 45_000L
+            fixture.keyStore.setClockSkewMs(fixture.domain, skewMs)
+            fixture.http.install("/v1/session/revoke", StubHttpSession.Canned(statusCode = 204))
+
+            fixture.client.logout()
+
+            val proof =
+                fixture.http
+                    .requestsFor("/v1/session/revoke")
+                    .single()
+                    .header(HttpHeader.DPOP)
+            assertNotNull(proof)
+            val payload = String(Base64.getUrlDecoder().decode(proof!!.split('.')[1]))
+            val iat = Regex("\"iat\":(\\d+)").find(payload)!!.groupValues[1].toLong()
+            val expectedSec = (System.currentTimeMillis() + skewMs) / 1000
+            assertTrue(
+                "revoke iat $iat must carry the snapshotted skew (expected≈$expectedSec); payload=$payload",
+                kotlin.math.abs(iat - expectedSec) <= 3,
             )
         }
 

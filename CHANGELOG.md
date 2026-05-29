@@ -4,6 +4,26 @@ Notable changes to the Prelude Android Auth SDK (`so.prelude.android:auth-sdk`).
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-05-29
+
+### Added
+- `canChangePassword()` — returns `true` if the refreshed
+  access token's `scope` includes `prld:pwd:write`.
+
+### Changed
+- Signals dispatch is now best-effort; failures no longer block
+  auth calls. `CancellationException` still propagates.
+
+### Fixed
+- DPoP proofs adjust `iat` by per-domain clock skew learned from
+  the server `Date:` header, with one retry on
+  `invalid_dpop_proof`. Skew is persisted in SharedPreferences
+  and wiped on logout.
+- `getProfile()` / `getAccessToken()` are race-safe against a
+  concurrent `invalidateCache()`.
+- No redundant refresh when a 401 races another caller's
+  refresh.
+
 ## [0.3.0] - 2026-05-18
 
 ### Changed

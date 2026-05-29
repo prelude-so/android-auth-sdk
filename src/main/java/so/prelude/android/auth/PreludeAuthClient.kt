@@ -1,6 +1,8 @@
 package so.prelude.android.auth
 
 import android.content.Context
+import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
@@ -232,12 +234,11 @@ class PreludeAuthClient internal constructor(
     // MARK: - Profile queries
 
     /**
-     * Profile claims of the currently-cached access token, or `null`
-     * if none. Uses the expiration-ignoring accessor so the app can
-     * render the profile even during a refresh.
+     * Profile claims of the cached access token, or `null`. Ignores
+     * expiration so the app can render while a refresh is in flight.
      */
-    fun getProfile(): PreludeProfile? {
-        val entry = accessTokenCache.getWithoutExpirationCheck(domain) ?: return null
+    suspend fun getProfile(): PreludeProfile? {
+        val entry = readCacheCoherent() ?: return null
         return try {
             PreludeProfile.fromJwt(JwtDecoder.decode(entry.accessToken))
         } catch (_: PreludeAuthError) {
@@ -245,32 +246,31 @@ class PreludeAuthClient internal constructor(
         }
     }
 
-    /**
-     * Session identifier of the currently-cached access token, or
-     * `null` if none or the token can't be decoded. Sourced from the
-     * JWT `sid` claim.
-     */
-    fun getSessionId(): String? = getProfile()?.sessionId
+    /** Session id (JWT `sid` claim) of the cached token, or `null`. */
+    suspend fun getSessionId(): String? = getProfile()?.sessionId
 
     /**
-     * Raw cached access token, or `null` if none. Does not check
-     * expiration — callers that need a fresh token should use
-     * [refresh]. Primarily for diagnostics; production code gets the
-     * token wired in automatically by [autoRefreshInterceptor].
+     * Cached access token, or `null`. Ignores expiration; mostly for
+     * diagnostics — protected calls get the token via
+     * [autoRefreshInterceptor].
      */
-    fun getAccessToken(): String? = accessTokenCache.getWithoutExpirationCheck(domain)?.accessToken
+    suspend fun getAccessToken(): String? = readCacheCoherent()?.accessToken
 
     /**
-     * Absolute expiration of the cached access token, or `null` if
-     * none. Already clock-skew-adjusted at storage time, so comparing
-     * against the local clock is safe. Returns even for expired tokens
-     * so diagnostic UIs can render "expired Ns ago" without losing
-     * info.
+     * Cached token's absolute expiration (clock-skew-adjusted at
+     * cache time), or `null`. Returns even for expired tokens.
      */
-    fun getAccessTokenExpiresAt(): Instant? =
-        accessTokenCache.getWithoutExpirationCheck(domain)?.let {
-            Instant.ofEpochSecond(it.expiresAt)
-        }
+    suspend fun getAccessTokenExpiresAt(): Instant? = readCacheCoherent()?.let { Instant.ofEpochSecond(it.expiresAt) }
+
+    /**
+     * Join any in-flight refresh, then read. No-op when no refresh
+     * is running, so accessors stay cheap on the happy path and
+     * surface the post-refresh entry when one is mid-flight.
+     */
+    private suspend fun readCacheCoherent(): AccessTokenEntry? {
+        inflightRefresh.joinIfRunning()
+        return accessTokenCache.getWithoutExpirationCheck(domain)
+    }
 
     /**
      * Mark the cached access token as expired without removing it.
@@ -475,26 +475,25 @@ class PreludeAuthClient internal constructor(
      * login request body. No-op (returns `null`) when no dispatcher is
      * wired — appropriate for local development and tests.
      *
-     * Wraps any failure from the underlying dispatcher (network,
-     * invalid key, malformed response) as
-     * [PreludeAuthError.SignalsDispatchFailed] so callers always see
-     * the structured public-facing error type. The wrap is centralised
-     * here so every login surface that gates on `dispatch_id` reports
-     * the failure consistently. Coroutine cancellation propagates
-     * untouched.
+     * Best-effort: a failure from the underlying dispatcher (network,
+     * timeout, server error) must never block the auth flow. The
+     * error is logged and `null` is returned so the request proceeds
+     * without `dispatch_id`; anti-fraud coverage degrades gracefully.
+     * Coroutine cancellation still propagates as-is.
      */
     internal suspend fun dispatchSignalsIfConfigured(): String? {
         val dispatcher = signalsDispatcher ?: return null
         return try {
             dispatcher.dispatch()
-        } catch (e: kotlinx.coroutines.CancellationException) {
+        } catch (e: CancellationException) {
             // Structured-concurrency cancellation must propagate as-is.
             throw e
-        } catch (e: PreludeAuthError) {
-            // Already structured — let it through unchanged.
-            throw e
-        } catch (e: Throwable) {
-            throw PreludeAuthError.SignalsDispatchFailed(e)
+        } catch (e: Exception) {
+            // Catches Exception (not Throwable) so JVM Error subclasses
+            // (OutOfMemoryError, LinkageError, ...) keep their default
+            // propagation. Same rationale as dropConsumedScopeAfterChangePassword.
+            Log.e("PreludeAuth", "failed to dispatch signals", e)
+            null
         }
     }
 

@@ -14,15 +14,15 @@ import so.prelude.android.auth.dpop.decodeJwtJti
  * Attaches a DPoP proof bound to the [challengeToken]'s `jti` —
  * used in step-up flows to prove ownership of the challenge.
  *
- * Two deliberate departures from [DPoPInterceptor]:
- *
+ * Differences from [DPoPInterceptor]:
  *  1. Uses [DPoPKeyStore.get], not `getOrCreate`. If the domain has
  *     no key, the proof is skipped and the request passes through
- *     unchanged — step-up only makes sense once a session key
- *     already exists.
+ *     unchanged.
  *  2. No nonce is included, and no nonce is persisted from the
- *     response. The challenge proof is one-shot ownership; the
- *     `htu`/`iat`/`jti` triple is what the server validates.
+ *     response. The challenge proof is one-shot ownership.
+ *  3. No retry. The clock skew correction is *read* from the
+ *     keystore so one-shot proofs after the regular interceptor's
+ *     first retry are pre-corrected.
  *
  * @param keyStore source of the existing DPoP keypair.
  * @param domain key namespace for this client.
@@ -37,11 +37,6 @@ internal class ChallengeDPoPInterceptor(
     private val challengeToken: String,
     private val hostOverride: String? = null,
 ) : PreludeInterceptor {
-    /**
-     * `withContext(Dispatchers.IO)` because the body does blocking
-     * keystore I/O via [DPoPKeyStore.get] and runs ECDSA signing in
-     * [createDPoPProof]. Same reasoning as [DPoPInterceptor].
-     */
     override suspend fun intercept(
         request: Request,
         next: SendFunction,
@@ -50,6 +45,7 @@ internal class ChallengeDPoPInterceptor(
             try {
                 val key = keyStore.get(domain) ?: return@withContext next(request)
                 val jti = decodeJwtJti(challengeToken) ?: return@withContext next(request)
+                val skewMs = keyStore.getClockSkewMs(domain) ?: 0L
 
                 val proof =
                     createDPoPProof(
@@ -58,6 +54,7 @@ internal class ChallengeDPoPInterceptor(
                         url = dpopHtu(request, hostOverride),
                         nonce = null,
                         jti = jti,
+                        clockSkewMs = skewMs,
                     )
                 next(request.newBuilder().header(HttpHeader.DPOP, proof).build())
             } catch (e: DPoPKeyStoreError) {

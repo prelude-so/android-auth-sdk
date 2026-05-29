@@ -2,7 +2,10 @@ package so.prelude.android.auth
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
+import so.prelude.android.auth.crypto.JwtDecoder
 import so.prelude.android.auth.http.ChangePasswordRequestBody
 import so.prelude.android.auth.http.JSON_MEDIA_TYPE
 import so.prelude.android.auth.http.WIRE_JSON
@@ -141,6 +144,35 @@ suspend fun PreludeAuthClient.changePassword(newPassword: RedactedString) {
     // matches. Skipped on failure — the scope wasn't consumed
     // server-side, so the cache should keep reflecting that.
     dropConsumedScopeAfterChangePassword()
+}
+
+/**
+ * Whether the current session can call [changePassword] without
+ * going through step-up first — i.e. whether its access token
+ * already carries `prld:pwd:write`.
+ *
+ * Call before driving a "change password" UI to decide whether to
+ * prompt for step-up. Throws if the session refresh fails; returns
+ * `false` when the refreshed token lacks the scope or the claim
+ * is missing/malformed.
+ */
+suspend fun PreludeAuthClient.canChangePassword(): Boolean {
+    // Invalidate first so the refresh mint reflects current
+    // server-side scope, not the possibly-stale cached token. Same
+    // drain-then-replace shape as `dropConsumedScopeAfterChangePassword`
+    // so concurrent refreshes can't land a stale-scope token in the
+    // cache between our invalidate and mint.
+    val user =
+        inflightRefresh.replace {
+            invalidateCache()
+            doRefresh()
+        }
+
+    val payload = JwtDecoder.decode(user.accessToken).payload
+    val scope =
+        (payload["scope"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+            ?: return false
+    return scope.split(' ').contains("prld:pwd:write")
 }
 
 /**

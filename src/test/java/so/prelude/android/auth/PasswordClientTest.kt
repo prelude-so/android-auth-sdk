@@ -195,42 +195,6 @@ class PasswordClientTest {
             Unit
         }
 
-    @Test
-    fun loginWithPassword_dispatcherFailure_wrapsAsSignalsDispatchFailed_andSkipsHttp() {
-        val fixture =
-            Fixture.make(
-                signalsDispatcher = { error("boom") },
-            )
-        fixture.http.installAll(
-            "/v1/session/login/email/password" to loginOkResponse(),
-            "/v1/session/login/finalize" to finalizeOkResponse(),
-        )
-
-        val thrown =
-            assertThrows(PreludeAuthError.SignalsDispatchFailed::class.java) {
-                runBlocking {
-                    fixture.client.loginWithPassword(
-                        LoginWithPasswordOptions(identifier = email, password = password),
-                    )
-                }
-            }
-        // Underlying dispatcher exception is preserved as the cause so
-        // diagnostic UIs can drill into the real failure rather than
-        // just seeing the wrapper.
-        assertTrue(
-            "expected IllegalStateException cause, got ${thrown.cause}",
-            thrown.cause is IllegalStateException,
-        )
-        // Both endpoints must remain unhit — silently shipping a login
-        // without anti-fraud coverage is the worst possible failure.
-        assertTrue(
-            fixture.http.requestsFor("/v1/session/login/email/password").isEmpty(),
-        )
-        assertTrue(
-            fixture.http.requestsFor("/v1/session/login/finalize").isEmpty(),
-        )
-    }
-
     // MARK: - Error mapping
 
     @Test

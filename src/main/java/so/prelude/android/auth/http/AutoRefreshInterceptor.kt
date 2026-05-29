@@ -50,10 +50,21 @@ internal class AutoRefreshInterceptor(
         request: Request,
         next: SendFunction,
     ): Response {
-        val token = getAccessToken()
-        val response = next(request.withBearer(token))
+        val sentToken = getAccessToken()
+        val response = next(request.withBearer(sentToken))
 
         if (response.code != 401) return response
+
+        // A sibling caller may have refreshed while our 401 was
+        // in flight. If the cache now holds a different token,
+        // skip invalidate+refresh — `invalidateCache` would
+        // re-expire the fresh entry and force a redundant
+        // /refresh round-trip.
+        val fresh = getAccessToken()
+        if (fresh.isNotEmpty() && fresh != sentToken) {
+            response.close()
+            return next(request.withBearer(fresh))
+        }
 
         try {
             invalidateCache()

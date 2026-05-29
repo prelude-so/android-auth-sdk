@@ -26,6 +26,9 @@ import java.util.UUID
  *   to a challenge token's `jti` to prove ownership in step-up
  *   flows; otherwise a random UUID is generated.
  * @param now timestamp source. Injectable for tests.
+ * @param clockSkewMs `serverTime - localTime` in ms. Added to
+ *   `iat` so the claim lands in the server's frame when the device
+ *   clock has drifted. Default `0` keeps existing callers compiling.
  */
 internal fun createDPoPProof(
     key: DPoPKey,
@@ -34,6 +37,7 @@ internal fun createDPoPProof(
     nonce: String? = null,
     jti: String? = null,
     now: Instant = Instant.now(),
+    clockSkewMs: Long = 0L,
 ): String {
     val jwk = key.exportPublicJwk()
 
@@ -52,12 +56,13 @@ internal fun createDPoPProof(
             )
         }
 
+    val iatSec = Math.floorDiv(now.toEpochMilli() + clockSkewMs, 1_000L)
     val payload =
         buildJsonObject {
             put("jti", JsonPrimitive(jti ?: UUID.randomUUID().toString()))
             put("htm", JsonPrimitive(method))
             put("htu", JsonPrimitive(url))
-            put("iat", JsonPrimitive(now.epochSecond))
+            put("iat", JsonPrimitive(iatSec))
             if (nonce != null) put("nonce", JsonPrimitive(nonce))
         }
 

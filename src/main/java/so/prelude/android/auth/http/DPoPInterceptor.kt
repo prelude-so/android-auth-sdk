@@ -10,8 +10,17 @@ import so.prelude.android.auth.dpop.DPoPKey
 import so.prelude.android.auth.dpop.DPoPKeyStore
 import so.prelude.android.auth.dpop.DPoPKeyStoreError
 import so.prelude.android.auth.dpop.createDPoPProof
+import kotlin.math.abs
 
 private const val USE_DPOP_NONCE_CODE = "use_dpop_nonce"
+private const val INVALID_DPOP_PROOF_CODE = "invalid_dpop_proof"
+
+/**
+ * Minimum |skew| (ms) that warrants retrying with a corrected
+ * `iat`. Below this an `invalid_dpop_proof` is unlikely to be
+ * caused by clock drift, so we don't retry.
+ */
+private const val CLOCK_SKEW_RETRY_THRESHOLD_MS = 1_000L
 
 // 4 KiB: production error bodies are sub-200 bytes; this caps the
 // damage of a misbehaving server returning a giant non-JSON 4xx page.
@@ -19,34 +28,18 @@ private const val MAX_PEEK_BYTES = 4L * 1024L
 private val json = Json { ignoreUnknownKeys = true }
 
 /**
- * Attaches a DPoP proof to every outgoing request, persists any
- * `DPoP-Nonce` the server returns, and recovers transparently from
- * a `use_dpop_nonce` 4xx by retrying once with the fresh nonce.
- *
- * Designed to be composed after auth/refresh interceptors but
- * before the base session, so the proof's `htu` and `htm` line up
- * with what actually goes on the wire.
- *
- * @param keyStore source of the per-domain DPoP keypair and nonce.
- * @param domain key/nonce namespace for this client (typically the
- *   Prelude API origin).
- * @param hostOverride canonical authority to use for the `htu`
- *   claim when the request is being routed through a non-canonical
- *   host (e.g. `localhost` in dev). When `null` the request URL is
- *   used verbatim.
+ * Attaches a DPoP proof to every request, persists `DPoP-Nonce`
+ * responses, and retries (one-shot) on:
+ *  - `use_dpop_nonce`: re-sign with the fresh nonce.
+ *  - `invalid_dpop_proof` + `Date:` header indicating
+ *    |skew| ≥ [CLOCK_SKEW_RETRY_THRESHOLD_MS]: re-sign with the
+ *    corrected `iat` and persist the skew for future requests.
  */
 internal class DPoPInterceptor(
     private val keyStore: DPoPKeyStore,
     private val domain: String,
     private val hostOverride: String? = null,
 ) : PreludeInterceptor {
-    /**
-     * Wrapped in [withContext]`(Dispatchers.IO)` because the body
-     * does blocking I/O — keystore lookups, prefs reads/writes, and
-     * an OkHttp `peekBody().string()` decode. The wrap makes the
-     * dispatcher contract explicit; without it a main-thread caller
-     * would ANR.
-     */
     override suspend fun intercept(
         request: Request,
         next: SendFunction,
@@ -54,69 +47,114 @@ internal class DPoPInterceptor(
         withContext(Dispatchers.IO) {
             try {
                 val key = keyStore.getOrCreate(domain)
-                // [DPoPNonceStore] normalises empty-string writes to
-                // delete, so `getNonce` should never return `""` here;
-                // the `takeIf` is defense-in-depth against a stale
-                // entry left by an older SDK version.
                 val nonce = keyStore.getNonce(domain)?.takeIf { it.isNotEmpty() }
+                val skewMs = keyStore.getClockSkewMs(domain) ?: 0L
 
-                val response = next(request.withProof(key, nonce))
+                val response = next(request.signedWith(key, nonce, skewMs))
+                // RFC 9449 §8: server SHOULD echo `DPoP-Nonce` on
+                // every response. Harvest unconditionally up here
+                // so the retry paths stay focused on their own
+                // concern (use_dpop_nonce or clock skew) and read
+                // any rotated nonce from the store.
+                val rotatedNonce = response.harvestNonce()
+                if (response.code in 200..299) return@withContext response
 
-                if (response.code !in 200..299 && response.isUseDPoPNonce()) {
-                    val freshNonce = response.header(HttpHeader.DPOP_NONCE)
-                    if (freshNonce == null) {
-                        // Server demanded a fresh nonce but didn't supply one.
-                        // That's a server bug — surface it as a structured
-                        // error rather than letting the generic 4xx through,
-                        // where it would mask the real cause of failure.
-                        response.close()
-                        throw PreludeAuthError.Generic(
-                            code = "missing_dpop_nonce_header",
-                            displayMessage = "Server returned $USE_DPOP_NONCE_CODE without a ${HttpHeader.DPOP_NONCE} header",
-                        )
+                when (response.errorCode()) {
+                    USE_DPOP_NONCE_CODE -> {
+                        retryWithFreshNonce(request, response, key, skewMs, rotatedNonce, next)
                     }
-                    response.close()
-                    // Persist before the retry. RFC 9449 §8 requires the client
-                    // to use this nonce on all subsequent proofs; if the retry
-                    // throws or its response omits `DPoP-Nonce`, we'd otherwise
-                    // lose it and pay for another challenge round-trip on the
-                    // next request. Re-harvested below in case the retry
-                    // response advances the nonce.
-                    keyStore.setNonce(domain, freshNonce)
-                    val retry = next(request.withProof(key, freshNonce))
-                    retry.header(HttpHeader.DPOP_NONCE)?.let { keyStore.setNonce(domain, it) }
-                    return@withContext retry
-                }
 
-                response.header(HttpHeader.DPOP_NONCE)?.let { keyStore.setNonce(domain, it) }
-                response
+                    INVALID_DPOP_PROOF_CODE -> {
+                        retryWithCorrectedSkew(request, response, key, next) ?: response
+                    }
+
+                    else -> {
+                        response
+                    }
+                }
             } catch (e: DPoPKeyStoreError) {
-                // Internal crypto failure — wrap into the public error
-                // contract so callers see one error hierarchy.
                 throw PreludeAuthError.CryptoFailure(e)
             }
         }
 
-    private fun Request.withProof(
+    private suspend fun retryWithFreshNonce(
+        request: Request,
+        response: Response,
+        key: DPoPKey,
+        skewMs: Long,
+        freshNonce: String?,
+        next: SendFunction,
+    ): Response {
+        if (freshNonce == null) {
+            response.close()
+            throw PreludeAuthError.Generic(
+                code = "missing_dpop_nonce_header",
+                displayMessage = "Server returned $USE_DPOP_NONCE_CODE without a ${HttpHeader.DPOP_NONCE} header",
+            )
+        }
+        response.close()
+        return next(request.signedWith(key, freshNonce, skewMs)).also { it.harvestNonce() }
+    }
+
+    /** `null` when no Date header / unparseable / sub-threshold —
+     *  caller falls through to the normal error path. A
+     *  sub-threshold result still *clears* any persisted skew so
+     *  a stale correction (e.g. from before a device-clock
+     *  re-sync) can't keep poisoning future requests. */
+    private suspend fun retryWithCorrectedSkew(
+        request: Request,
+        response: Response,
+        key: DPoPKey,
+        next: SendFunction,
+    ): Response? {
+        val skewMs = response.serverSkewMs() ?: return null
+        if (abs(skewMs) < CLOCK_SKEW_RETRY_THRESHOLD_MS) {
+            keyStore.deleteClockSkewMs(domain)
+            return null
+        }
+        response.close()
+        // Persisted skew is sticky until the next
+        // `invalid_dpop_proof` either resets or clears it. After
+        // a device-clock re-sync the first request burns one
+        // server rejection to self-heal — acceptable in exchange
+        // for not invalidating skew on every refresh.
+        keyStore.setClockSkewMs(domain, skewMs)
+        val nonce = keyStore.getNonce(domain)?.takeIf { it.isNotEmpty() }
+        return next(request.signedWith(key, nonce, skewMs)).also { it.harvestNonce() }
+    }
+
+    private fun Request.signedWith(
         key: DPoPKey,
         nonce: String?,
+        clockSkewMs: Long,
     ): Request {
-        val proof = createDPoPProof(key, method, dpopHtu(this, hostOverride), nonce)
+        val proof = createDPoPProof(key, method, dpopHtu(this, hostOverride), nonce, clockSkewMs = clockSkewMs)
         return newBuilder().header(HttpHeader.DPOP, proof).build()
     }
 
-    /**
-     * Snapshot the response body (without consuming it) and check
-     * whether the error code is `use_dpop_nonce`. Any decode failure
-     * — non-JSON body, unexpected shape, body too large — falls
-     * through to "no, it's not a nonce challenge", because retrying
-     * on an unrelated error would mask the real failure.
-     */
-    private fun Response.isUseDPoPNonce(): Boolean =
+    /** Persist a rotated `DPoP-Nonce` if present and return it. */
+    private fun Response.harvestNonce(): String? {
+        val nonce = header(HttpHeader.DPOP_NONCE)?.takeIf { it.isNotEmpty() }
+        nonce?.let { keyStore.setNonce(domain, it) }
+        return nonce
+    }
+
+    /** `serverTime - localTime` in ms; `null` on missing or
+     *  unparseable header so the caller can skip the retry. */
+    private fun Response.serverSkewMs(): Long? {
+        val dateHeader = header(HttpHeader.DATE) ?: return null
+        val serverInstant = HttpDate.parse(dateHeader) ?: return null
+        return serverInstant.toEpochMilli() - System.currentTimeMillis()
+    }
+
+    /** Peek the body and return the JSON error code, or `null` on
+     *  any decode failure. Unrelated 4xx then surfaces as itself
+     *  instead of being retried. */
+    private fun Response.errorCode(): String? =
         try {
             val body = peekBody(MAX_PEEK_BYTES).string()
-            json.decodeFromString(ApiErrorJson.serializer(), body).code == USE_DPOP_NONCE_CODE
+            json.decodeFromString(ApiErrorJson.serializer(), body).code
         } catch (_: Exception) {
-            false
+            null
         }
 }
