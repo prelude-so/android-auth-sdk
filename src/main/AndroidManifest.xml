@@ -1,4 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <application>
+        <!--
+            Receives the OAuth provider redirect. Behavioral attributes
+            live here so the login is not recreated mid-flow on a
+            configuration change (it has no UI to restore). Apps add an
+            <intent-filter> with their redirect scheme to this activity.
+        -->
+        <activity
+            android:name="so.prelude.android.auth.social.OAuthRedirectActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|uiMode|density|touchscreen" />
+    </application>
 </manifest>

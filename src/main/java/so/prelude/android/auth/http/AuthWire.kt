@@ -113,7 +113,7 @@ internal data class LoginWithPasswordRequestBody(
 
 /**
  * Body returned by credential-exchange endpoints
- * (`/otp/check`, `/login/email/password`, future sign-up / migration)
+ * (`/otp/check`, `/login/email/password`, `/migration`, future sign-up)
  * that hand back a short-lived, single-use challenge token.
  * [finalizeLogin] exchanges it on `/login/finalize`.
  *
@@ -126,11 +126,106 @@ internal data class ChallengeTokenResponse(
     @SerialName("challenge_token") val challengeToken: String? = null,
 )
 
-/** Body posted to `POST /v1/session/login/finalize`. */
+/**
+ * Body posted to `POST /v1/session/login/finalize`.
+ *
+ * @property codeVerifier PKCE verifier matching the `code_challenge`
+ *   sent at the start of the flow; `null` (omitted from the wire)
+ *   when the flow didn't bind one.
+ */
 @Serializable
 internal data class FinalizeLoginRequestBody(
     @SerialName("challenge_token") val challengeToken: String,
+    @SerialName("code_verifier") val codeVerifier: String? = null,
+) {
+    /**
+     * Redact both fields: the challenge token is a bearer-equivalent
+     * for the in-flight login and the verifier is the PKCE secret
+     * that authorizes its redemption — one leaked log line must not
+     * carry both halves of the exchange. A `null` verifier renders
+     * as `null`, preserving the "was PKCE bound?" signal. JSON
+     * encoding still ships the values.
+     */
+    override fun toString(): String =
+        "FinalizeLoginRequestBody(challengeToken=<redacted>, codeVerifier=${if (codeVerifier == null) "null" else "<redacted>"})"
+}
+
+// MARK: - OAuth login
+
+/**
+ * Body posted to `POST /v1/session/login/oauth/{provider}/authorize`
+ * to start an OAuth web login.
+ *
+ * @property redirectUri where the server redirects once the provider
+ *   authentication completes; allowlisted server-side.
+ * @property codeChallenge S256 PKCE challenge. The matching verifier
+ *   is sent on `/login/finalize`, so only the client that started the
+ *   flow can redeem the challenge token.
+ * @property codeChallengeMethod always `"S256"`.
+ * @property dispatchId anti-fraud signals envelope id; `null` when no
+ *   `PreludeSignalsDispatcher` is configured.
+ */
+@Serializable
+internal data class OAuthAuthorizeRequestBody(
+    @SerialName("redirect_uri") val redirectUri: String,
+    @SerialName("code_challenge") val codeChallenge: String,
+    @SerialName("code_challenge_method") val codeChallengeMethod: String,
+    @SerialName("dispatch_id") val dispatchId: String? = null,
 )
+
+/**
+ * Response from `POST /v1/session/login/oauth/{provider}/authorize`.
+ *
+ * `authorizationUrl` is nullable so a malformed response surfaces a
+ * structured error rather than a generic JSON decode failure.
+ */
+@Serializable
+internal data class OAuthAuthorizeResponseBody(
+    @SerialName("authorization_url") val authorizationUrl: String? = null,
+)
+
+/**
+ * Claims carried by OAuth-link challenge tokens. A `grant_mode` of
+ * `oauth-email-link` means the provider returned an unverified email,
+ * so the login completes via an emailed one-time code.
+ */
+@Serializable
+internal data class OAuthLinkClaims(
+    @SerialName("grant_mode") val grantMode: String? = null,
+    val metadata: Metadata? = null,
+) {
+    @Serializable
+    internal data class Metadata(
+        @SerialName("oauth_email") val oauthEmail: String? = null,
+    )
+}
+
+// MARK: - Migration
+
+/**
+ * Body posted to `POST /v1/session/migration` to exchange a legacy
+ * bearer token for a login challenge token.
+ *
+ * @property token bearer token issued by the legacy authentication
+ *   system; validated server-side.
+ * @property codeChallenge S256 PKCE challenge. The matching verifier
+ *   is sent on `/login/finalize`, so only the client that started
+ *   the migration can redeem the challenge token.
+ * @property dispatchId anti-fraud signals envelope id; `null` when no
+ *   `PreludeSignalsDispatcher` is configured.
+ */
+@Serializable
+internal data class MigrateRequestBody(
+    val token: String,
+    @SerialName("code_challenge") val codeChallenge: String,
+    @SerialName("dispatch_id") val dispatchId: String? = null,
+) {
+    /**
+     * The legacy token is a live credential — keep it out of logs
+     * and stack traces. JSON encoding still ships the value.
+     */
+    override fun toString(): String = "MigrateRequestBody(token=<redacted>, codeChallenge=$codeChallenge, dispatchId=$dispatchId)"
+}
 
 // MARK: - Step-up
 
@@ -174,7 +269,7 @@ internal data class StepUpRequestResponse(
  * next challenge step requires OTP delivery.
  */
 @Serializable
-internal data class StepUpOTPCreateRequestBody(
+internal data class SendOTPRequestBody(
     @SerialName("challenge_token") val challengeToken: String,
     @SerialName("dispatch_id") val dispatchId: String? = null,
 )

@@ -37,10 +37,14 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)
+    // Social login (opt-in) opens the provider page in a Custom
+    // Tab. Compile-only so apps that skip social pull no extra
+    // dependency; social integrators add it themselves.
+    compileOnly(libs.androidx.browser)
     // Anti-fraud signals dispatch is provided by the Prelude Android
     // SDK; wired as a project reference at dev time and swapped for
     // the published `so.prelude.android:sdk` coordinate at release.
-    implementation("so.prelude.android:sdk:0.5.2")
+    implementation("so.prelude.android:sdk:0.6.1")
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

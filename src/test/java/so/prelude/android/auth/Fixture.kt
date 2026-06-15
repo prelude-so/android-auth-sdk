@@ -1,11 +1,15 @@
 package so.prelude.android.auth
 
 import so.prelude.android.auth.dpop.FakeDPoPKeyStore
+import so.prelude.android.auth.http.DeviceIDInterceptor
 import so.prelude.android.auth.http.HttpClient
 import so.prelude.android.auth.signals.PreludeSignalsDispatcher
 import so.prelude.android.auth.store.AccessTokenCache
 import so.prelude.android.auth.store.AccessTokenStorage
+import so.prelude.android.auth.store.DeviceIDStorage
+import so.prelude.android.auth.store.DeviceIDStore
 import so.prelude.android.auth.store.InMemoryAccessTokenStorage
+import so.prelude.android.auth.store.InMemoryDeviceIDStorage
 import so.prelude.android.auth.store.InMemoryRefreshTokenStorage
 import so.prelude.android.auth.store.RefreshTokenStorage
 import so.prelude.android.auth.store.RefreshTokenStore
@@ -34,6 +38,9 @@ internal class Fixture(
     // a [FailingAccessTokenStorage] to assert the access-token cache
     // delete is on the wipe path.
     val accessTokenStorage: AccessTokenStorage = InMemoryAccessTokenStorage(),
+    // Same shape — failure-mode tests inject a [FailingDeviceIDStorage]
+    // to assert a device-id fault never fails the request chain.
+    val deviceIDStorage: DeviceIDStorage = InMemoryDeviceIDStorage(),
 ) {
     val keyStore = FakeDPoPKeyStore()
     val accessTokenCache =
@@ -42,8 +49,14 @@ internal class Fixture(
             storage = accessTokenStorage,
         )
     val refreshTokenStore = RefreshTokenStore(storage = refreshTokenStorage)
+    val deviceIDStore = DeviceIDStore(storage = deviceIDStorage)
     val http = StubHttpSession()
-    val httpClient = HttpClient(session = http, clock = { clock })
+    val httpClient =
+        HttpClient(
+            session = http,
+            clock = { clock },
+            defaultInterceptors = listOf(DeviceIDInterceptor(deviceIDStore, domain)),
+        )
 
     val client: PreludeAuthClient =
         PreludeAuthClient(
@@ -72,6 +85,7 @@ internal class Fixture(
             signalsDispatcher: PreludeSignalsDispatcher? = null,
             refreshTokenStorage: RefreshTokenStorage = InMemoryRefreshTokenStorage(),
             accessTokenStorage: AccessTokenStorage = InMemoryAccessTokenStorage(),
+            deviceIDStorage: DeviceIDStorage = InMemoryDeviceIDStorage(),
         ): Fixture =
             Fixture(
                 baseUrl = URL("https://$domain"),
@@ -80,6 +94,7 @@ internal class Fixture(
                 signalsDispatcher = signalsDispatcher,
                 refreshTokenStorage = refreshTokenStorage,
                 accessTokenStorage = accessTokenStorage,
+                deviceIDStorage = deviceIDStorage,
             )
     }
 }

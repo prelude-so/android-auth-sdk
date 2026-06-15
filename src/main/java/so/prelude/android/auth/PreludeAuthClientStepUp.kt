@@ -10,7 +10,6 @@ import so.prelude.android.auth.http.ChallengeDPoPInterceptor
 import so.prelude.android.auth.http.ChallengeTokenResponse
 import so.prelude.android.auth.http.JSON_MEDIA_TYPE
 import so.prelude.android.auth.http.StepUpOTPCheckRequestBody
-import so.prelude.android.auth.http.StepUpOTPCreateRequestBody
 import so.prelude.android.auth.http.StepUpRequestBody
 import so.prelude.android.auth.http.StepUpRequestResponse
 import so.prelude.android.auth.http.WIRE_JSON
@@ -178,21 +177,7 @@ suspend fun PreludeAuthClient.sendStepUpOTP(challenge: PreludeStepUpChallenge) {
         )
     }
 
-    val dispatchId = dispatchSignalsIfConfigured()
-
-    val payload =
-        WIRE_JSON.encodeToString(
-            StepUpOTPCreateRequestBody(
-                challengeToken = challenge.token,
-                dispatchId = dispatchId,
-            ),
-        )
-    val request =
-        buildSessionRequest("otp")
-            .method("POST", payload.toRequestBody(JSON_MEDIA_TYPE))
-            .build()
-
-    httpClient.sendExpectingNoBody(request)
+    sendOTP(challenge.token)
 }
 
 /**

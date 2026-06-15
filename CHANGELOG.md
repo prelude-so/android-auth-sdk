@@ -4,6 +4,45 @@ Notable changes to the Prelude Android Auth SDK (`so.prelude.android:auth-sdk`).
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-06-15
+
+### Added
+- `migrate(MigrateOptions)` — exchange a legacy bearer token for a
+  Prelude session via `POST /migration` + `/login/finalize`,
+  PKCE-bound (S256). Idempotent (cached session short-circuits) and
+  single-flight: concurrent callers share one exchange so the legacy
+  token is spent at most once.
+
+- Social login. `loginWithOAuth(context, OAuthLoginOptions)` opens
+  the provider page in a Chrome Custom Tab and establishes a session;
+  `initiateOAuthLogin` / `finalizeOAuthLogin` back it for apps that
+  present the page themselves. PKCE-bound (S256) through the shared
+  `/login/finalize` path; unverified provider emails surface as
+  `FinalizeOAuthLoginResult.OtpRequired`. Opt-in: `androidx.browser`
+  is `compileOnly`, so apps that skip social pull no extra
+  dependency — social integrators add it and declare
+  `OAuthRedirectActivity` with their redirect scheme.
+
+- `X-Device-Id` on every session request: a stable per-domain UUID,
+  persisted in app-private storage and minted lazily on first use,
+  so the backend can correlate an install without a cookie.
+  Best-effort — a storage failure omits the header rather than
+  failing the request.
+
+- `PreludeAuthError.SamlLoginRequired`, surfaced when a login is
+  refused because the identifier's email domain is enforced to use
+  SAML SSO. Recover by restarting via the SAML initiate flow.
+
+### Changed
+- `finalizeLogin` forwards a prior session's refresh token as
+  `X-Refresh-Token` when one is stored, so a re-login revokes the
+  old session instead of leaving it dangling. Omitted on first login.
+
+- SAML connection error codes now map to typed errors:
+  `saml_connection_disabled` → `Forbidden`;
+  `saml_connection_not_configured` and `saml_no_connection_for_email`
+  → `NotFound`.
+
 ## [0.4.0] - 2026-05-29
 
 ### Added

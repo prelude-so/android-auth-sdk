@@ -5,6 +5,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import so.prelude.android.auth.http.ChallengeTokenResponse
 import so.prelude.android.auth.http.CheckOTPRequestBody
 import so.prelude.android.auth.http.JSON_MEDIA_TYPE
+import so.prelude.android.auth.http.SendOTPRequestBody
 import so.prelude.android.auth.http.StartOTPLoginRequestBody
 import so.prelude.android.auth.http.WIRE_JSON
 import so.prelude.android.auth.http.WireIdentifier
@@ -12,7 +13,7 @@ import so.prelude.android.auth.http.WireIdentifier
 /*
  * OTP login surface for [PreludeAuthClient].
  *
- * Three public entry points plus one internal helper:
+ * Three public entry points plus the internal [sendOTP] helper:
  *
  *   - [startOTPLogin]  — unauthenticated, no DPoP / no bearer; attaches
  *     a `dispatch_id` from [PreludeSignalsDispatcher] when configured.
@@ -21,8 +22,10 @@ import so.prelude.android.auth.http.WireIdentifier
  *   - [checkOTP]       — unauthenticated. The OTP code in the body is
  *     the entire credential; no session key exists yet, so a DPoP
  *     proof has nothing legitimate to bind to. The device-to-token
- *     binding happens one step later, on `/login/finalize`, which
+ *     binding happens one step later,on `/login/finalize`, which
  *     [finalizeLogin] handles.
+ *   - [sendOTP]        — internal; fires `POST /otp` for an in-flight
+ *     challenge token. No DPoP.
  *
  * Contract: only [finalizeLogin] (post-login) and `refresh()` (post-
  * rotation) write to the refresh-token store. Other call sites that
@@ -127,4 +130,24 @@ suspend fun PreludeAuthClient.checkOTP(code: String): PreludeUser {
     }
 
     return finalizeLogin(challengeToken)
+}
+
+/**
+ * Trigger OTP delivery (`POST /otp`) for an in-flight challenge.
+ *
+ * Unauthenticated: the challenge token in the body identifies the
+ * caller and carries its PKCE binding, so no DPoP. A configured
+ * [PreludeSignalsDispatcher] attaches a fresh `dispatch_id`.
+ */
+internal suspend fun PreludeAuthClient.sendOTP(challengeToken: String) {
+    val dispatchId = dispatchSignalsIfConfigured()
+    val payload =
+        WIRE_JSON.encodeToString(
+            SendOTPRequestBody(challengeToken = challengeToken, dispatchId = dispatchId),
+        )
+    val request =
+        buildSessionRequest("otp")
+            .method("POST", payload.toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+    httpClient.sendExpectingNoBody(request)
 }

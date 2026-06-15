@@ -82,6 +82,7 @@ class ErrorMappingTest {
             "invalid_verify_configuration",
             "suspended_account",
             "invalid_api_key",
+            "saml_connection_disabled",
         ).forEach { code ->
             assertTrue("$code → Forbidden", map(code) is PreludeAuthError.Forbidden)
         }
@@ -89,10 +90,17 @@ class ErrorMappingTest {
 
     @Test
     fun resourceState_isTyped() {
-        assertTrue(map("not_found") is PreludeAuthError.NotFound)
+        listOf("not_found", "saml_connection_not_configured", "saml_no_connection_for_email").forEach { code ->
+            assertTrue("$code → NotFound", map(code) is PreludeAuthError.NotFound)
+        }
         listOf("conflict", "identifier_already_exists").forEach { code ->
             assertTrue("$code → Conflict", map(code) is PreludeAuthError.Conflict)
         }
+    }
+
+    @Test
+    fun samlLoginRequired_isTyped() {
+        assertTrue(map("saml_login_required") is PreludeAuthError.SamlLoginRequired)
     }
 
     @Test

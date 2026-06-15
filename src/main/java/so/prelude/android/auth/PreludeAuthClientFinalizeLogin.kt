@@ -37,20 +37,43 @@ import so.prelude.android.auth.store.RefreshTokenRecord
  * has already wiped the stores we'd be about to write to, and we
  * surface as [PreludeAuthError.Unauthorized] instead of resurrecting a
  * session the caller just revoked.
+ *
+ * @param codeVerifier PKCE verifier matching the `code_challenge`
+ *   sent at the start of the flow; `null` when the flow didn't bind
+ *   one.
+ * @param startEpoch [PreludeAuthClient.sessionEpoch] observed when the
+ *   surrounding flow began; defaults to capture at entry. Multi-hop
+ *   flows ([migrate]) pass the value captured before their FIRST hop,
+ *   so a logout that completes between the hops — invisible to a
+ *   capture made here — still fails the re-check below.
  */
-internal suspend fun PreludeAuthClient.finalizeLogin(challengeToken: String): PreludeUser {
-    // Epoch guard: capture before the network call, re-check before
+internal suspend fun PreludeAuthClient.finalizeLogin(
+    challengeToken: String,
+    codeVerifier: String? = null,
+    // Epoch guard: captured before the network call, re-checked before
     // any store mutation. Pairs with the bump inside `logout()`.
-    val startEpoch = sessionEpoch.get()
+    startEpoch: Long = sessionEpoch.get(),
+): PreludeUser {
+    // Carry over a refresh token from a previous session, if any, so the
+    // server can revoke that session once the new one is established and
+    // avoid leaving it dangling across a re-login. Captured before the
+    // round-trip, since the response rotates the stored token below.
+    val previousRefreshToken = refreshTokenStore.get(domain)?.refreshToken
 
     val finalizeBody =
         WIRE_JSON.encodeToString(
-            FinalizeLoginRequestBody(challengeToken = challengeToken),
+            FinalizeLoginRequestBody(
+                challengeToken = challengeToken,
+                codeVerifier = codeVerifier,
+            ),
         )
-    val request =
+    val requestBuilder =
         buildSessionRequest("login/finalize")
             .method("POST", finalizeBody.toRequestBody(JSON_MEDIA_TYPE))
-            .build()
+    if (!previousRefreshToken.isNullOrEmpty()) {
+        requestBuilder.header(HttpHeader.REFRESH_TOKEN, previousRefreshToken)
+    }
+    val request = requestBuilder.build()
 
     val (body, http) =
         httpClient.sendJson(

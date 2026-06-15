@@ -4,9 +4,10 @@ coreKtx = "1.15.0"
 kotlin = "2.0.20"
 kotlinxSerializationJson = "1.5.1"
 okhttp = "4.12.0"
-prelude-core-sdk = "0.4.0"
+prelude-core-sdk = "0.4.1"
 junit = "4.13.2"
 kotlinxCoroutinesTest = "1.8.1"
+androidxBrowser = "1.8.0"
 mockk = "1.13.11"
 
 [libraries]
@@ -17,6 +18,7 @@ okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 prelude-core-sdk = { module = "so.prelude.android:core-sdk", version.ref = "prelude-core-sdk" }
 junit = { module = "junit:junit", version.ref = "junit" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinxCoroutinesTest" }
+androidx-browser = { module = "androidx.browser:browser", version.ref = "androidxBrowser" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 
 [plugins]

@@ -91,6 +91,9 @@ sealed class PreludeAuthError(
      */
     class Timeout : PreludeAuthError("Timeout")
 
+    /** The person dismissed the login UI before completing it. */
+    class Cancelled : PreludeAuthError("Cancelled")
+
     /** Client-side configuration is inconsistent (e.g. invalid base URL). */
     class InvalidConfiguration(
         message: String,
@@ -153,6 +156,15 @@ sealed class PreludeAuthError(
     class CryptoFailure(
         cause: Throwable,
     ) : PreludeAuthError("CryptoFailure: ${cause.message}", cause)
+
+    /**
+     * OTP or other login method refused because the identifier's
+     * email domain is enforced to use SAML SSO. Recover by
+     * restarting the flow via the SAML initiate endpoint.
+     */
+    class SamlLoginRequired(
+        message: String,
+    ) : PreludeAuthError("SamlLoginRequired: $message")
 
     /** Error code not recognised by the SDK. */
     class Generic(
@@ -221,8 +233,9 @@ internal fun PreludeAuthError.Companion.from(apiError: ApiErrorJson): PreludeAut
         // step-up policy refusals; `email_verification_not_allowed`
         // is OTP's "email channel is disabled" refusal;
         // `invalid_verify_configuration` / `suspended_account` /
-        // `invalid_api_key` are app-level policy denials. All fold
-        // into `Forbidden` so UIs can branch on a single case.
+        // `invalid_api_key` are app-level policy denials;
+        // `saml_connection_disabled` is a disabled SSO connection.
+        // All fold into `Forbidden` so UIs can branch on a single case.
         "forbidden",
         "auth_blocked",
         "scope_not_allowed",
@@ -232,11 +245,19 @@ internal fun PreludeAuthError.Companion.from(apiError: ApiErrorJson): PreludeAut
         "invalid_verify_configuration",
         "suspended_account",
         "invalid_api_key",
+        "saml_connection_disabled",
         -> PreludeAuthError.Forbidden(message)
 
         "insufficient_scope" -> PreludeAuthError.InsufficientScope(message)
 
-        "not_found" -> PreludeAuthError.NotFound(message)
+        "saml_login_required" -> PreludeAuthError.SamlLoginRequired(message)
+
+        // `saml_connection_not_configured` and `saml_no_connection_for_email`
+        // are 404 "resource not found" conditions for SAML connections.
+        "not_found",
+        "saml_connection_not_configured",
+        "saml_no_connection_for_email",
+        -> PreludeAuthError.NotFound(message)
 
         "conflict", "identifier_already_exists" -> PreludeAuthError.Conflict(message)
 
