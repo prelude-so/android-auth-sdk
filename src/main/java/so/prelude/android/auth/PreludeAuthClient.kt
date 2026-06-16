@@ -18,6 +18,7 @@ import so.prelude.android.auth.dpop.DPoPKeyStore
 import so.prelude.android.auth.dpop.newDPoPKeyStore
 import so.prelude.android.auth.http.AutoRefreshInterceptor
 import so.prelude.android.auth.http.DPoPInterceptor
+import so.prelude.android.auth.http.DeviceIDInterceptor
 import so.prelude.android.auth.http.HttpClient
 import so.prelude.android.auth.http.HttpHeader
 import so.prelude.android.auth.http.JSON_MEDIA_TYPE
@@ -28,9 +29,11 @@ import so.prelude.android.auth.http.WIRE_JSON
 import so.prelude.android.auth.signals.PreludeSignalsDispatcher
 import so.prelude.android.auth.store.AccessTokenCache
 import so.prelude.android.auth.store.AccessTokenEntry
+import so.prelude.android.auth.store.DeviceIDStore
 import so.prelude.android.auth.store.RefreshTokenRecord
 import so.prelude.android.auth.store.RefreshTokenStore
 import so.prelude.android.auth.store.SharedPreferencesAccessTokenStorage
+import so.prelude.android.auth.store.SharedPreferencesDeviceIDStorage
 import so.prelude.android.auth.store.SharedPreferencesRefreshTokenStorage
 import java.net.URL
 import java.time.Instant
@@ -119,6 +122,14 @@ class PreludeAuthClient internal constructor(
     internal val inflightLogout = Inflight<Unit>()
 
     /**
+     * Single-flight coordinator for [migrate]. Migrating spends a
+     * single-use challenge token, so concurrent callers must share
+     * one exchange — un-coalesced, the losers would fail with
+     * [PreludeAuthError.TokenReused].
+     */
+    internal val inflightMigrate = Inflight<PreludeUser>()
+
+    /**
      * Serialises [revokeSessions] callers. Unlike [inflightLogout] we
      * don't dedup-coalesce: callers can pass different
      * [PreludeRevokeTarget]s, so two concurrent callers must not share
@@ -199,7 +210,7 @@ class PreludeAuthClient internal constructor(
         // markers (`verification`, `did`) outliving the session
         // would let a post-logout observer of the jar see a flow
         // that's no longer valid.
-        httpClient = HttpClient.withCookieJar(timeout = timeout),
+        httpClient = newDefaultHttpClient(context, baseUrl, hostOverride, timeout),
         keyStore = newDefaultKeyStore(context, baseUrl, hostOverride),
         refreshTokenStore = newDefaultRefreshStore(context, baseUrl, hostOverride),
         accessTokenCache = newDefaultAccessCache(context, baseUrl, hostOverride),
@@ -615,6 +626,30 @@ class PreludeAuthClient internal constructor(
         ): DPoPKeyStore {
             validate(baseUrl, hostOverride)
             return newDPoPKeyStore(context.applicationContext)
+        }
+
+        /**
+         * Build the production [HttpClient] with the cookie jar
+         * shared between OkHttp and the SDK, plus a default
+         * device-id interceptor so every session request carries
+         * `X-Device-Id` without any per-callsite plumbing.
+         */
+        fun newDefaultHttpClient(
+            context: Context,
+            baseUrl: URL,
+            hostOverride: String?,
+            timeout: Duration,
+        ): HttpClient {
+            validate(baseUrl, hostOverride)
+            val domain = deriveDomain(baseUrl, hostOverride)
+            val deviceIDStore =
+                DeviceIDStore(
+                    storage = SharedPreferencesDeviceIDStorage(context.applicationContext),
+                )
+            return HttpClient.withCookieJar(
+                timeout = timeout,
+                defaultInterceptors = listOf(DeviceIDInterceptor(deviceIDStore, domain)),
+            )
         }
     }
 }

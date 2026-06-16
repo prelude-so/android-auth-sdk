@@ -25,6 +25,12 @@ internal object HttpHeader {
     // Prelude session-specific
 
     /**
+     * Stable per-domain device id attached to every session
+     * request. Persisted in [so.prelude.android.auth.store.DeviceIDStore].
+     */
+    const val DEVICE_ID = "X-Device-Id"
+
+    /**
      * Request header on `/refresh`; response header on
      * `/login/finalize` and any `/refresh` that rotates the token.
      */

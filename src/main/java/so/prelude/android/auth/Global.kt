@@ -164,6 +164,25 @@ class LoginWithPasswordOptions(
     override fun toString(): String = "LoginWithPasswordOptions(identifier=$identifier, password=$password)"
 }
 
+// MARK: - Migration
+
+/**
+ * Options for migrating a user from a legacy authentication system.
+ *
+ * @property token bearer token issued by the legacy system, wrapped
+ *   in [RedactedString] so it cannot leak through logs or stack
+ *   traces; held for the duration of one `migrate` call and never
+ *   persisted.
+ */
+class MigrateOptions(
+    val token: RedactedString,
+) {
+    /** Convenience constructor that wraps a raw token in [RedactedString]. */
+    constructor(token: String) : this(RedactedString(token))
+
+    override fun toString(): String = "MigrateOptions(token=$token)"
+}
+
 // MARK: - Step-up
 
 /**

@@ -58,6 +58,13 @@ internal class HttpClient(
      * wipe).
      */
     val cookieJar: InMemoryCookieJar? = null,
+    /**
+     * Interceptors appended after the per-call ones so they end
+     * up innermost in the chain — they add headers closest to the
+     * wire. Wired by [so.prelude.android.auth.PreludeAuthClient]
+     * so every session request carries `X-Device-Id`.
+     */
+    private val defaultInterceptors: List<PreludeInterceptor> = emptyList(),
 ) {
     /**
      * Raw response — does not map status codes. For interceptors that
@@ -67,7 +74,7 @@ internal class HttpClient(
         request: Request,
         interceptors: List<PreludeInterceptor> = emptyList(),
     ): HttpResponse {
-        val send = composeInterceptors(interceptors, session)
+        val send = composeInterceptors(interceptors + defaultInterceptors, session)
         return send(request).use { response ->
             val bytes = response.body?.bytes() ?: ByteArray(0)
             HttpResponse(
@@ -167,10 +174,12 @@ internal class HttpClient(
         internal fun withCookieJar(
             timeout: Duration,
             cookieJar: InMemoryCookieJar = InMemoryCookieJar(),
+            defaultInterceptors: List<PreludeInterceptor> = emptyList(),
         ): HttpClient =
             HttpClient(
                 session = OkHttpSession(OkHttpSession.defaultClient(cookieJar, timeout)),
                 cookieJar = cookieJar,
+                defaultInterceptors = defaultInterceptors,
             )
     }
 }

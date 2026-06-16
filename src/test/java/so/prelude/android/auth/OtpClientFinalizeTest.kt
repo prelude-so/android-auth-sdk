@@ -7,6 +7,8 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Test
+import so.prelude.android.auth.http.HttpHeader
+import so.prelude.android.auth.store.RefreshTokenRecord
 
 /**
  * `/login/finalize` happy path + response error mapping. Persistence
@@ -51,6 +53,49 @@ class OtpClientFinalizeTest {
                 "challenge-abc",
                 finalizeBody["challenge_token"]!!.jsonPrimitive.content,
             )
+            Unit
+        }
+
+    @Test
+    fun checkOTP_finalizeCarriesPreviousRefreshToken_whenPriorSessionExists() =
+        runBlocking {
+            // Re-login while a previous session's refresh token is still on
+            // disk: finalize forwards it as `X-Refresh-Token` so the server
+            // revokes the old session instead of leaving it dangling.
+            val fixture = Fixture.make()
+            fixture.refreshTokenStore.set(
+                domain = fixture.domain,
+                record =
+                    RefreshTokenRecord(
+                        refreshToken = "previous-refresh",
+                        refreshTokenExpiresAt = "2099-01-01T00:00:00Z",
+                    ),
+            )
+            fixture.http.installAll(
+                "/v1/session/otp/check" to OtpFixtures.checkOkResponse(),
+                "/v1/session/login/finalize" to OtpFixtures.finalizeOkResponse(),
+            )
+
+            fixture.client.checkOTP("123456")
+
+            val finalizeReq = fixture.http.requestsFor("/v1/session/login/finalize").single()
+            assertEquals("previous-refresh", finalizeReq.header(HttpHeader.REFRESH_TOKEN))
+            Unit
+        }
+
+    @Test
+    fun checkOTP_finalizeOmitsRefreshTokenHeader_whenNoPriorSession() =
+        runBlocking {
+            val fixture = Fixture.make()
+            fixture.http.installAll(
+                "/v1/session/otp/check" to OtpFixtures.checkOkResponse(),
+                "/v1/session/login/finalize" to OtpFixtures.finalizeOkResponse(),
+            )
+
+            fixture.client.checkOTP("123456")
+
+            val finalizeReq = fixture.http.requestsFor("/v1/session/login/finalize").single()
+            assertNull(finalizeReq.header(HttpHeader.REFRESH_TOKEN))
             Unit
         }
 
