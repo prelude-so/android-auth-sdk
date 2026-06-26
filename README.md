@@ -7,10 +7,10 @@ It is provided as a regular Maven artifact that you can use as a normal dependen
 
 ```
 (Kts)
-implementation("so.prelude.android:auth-sdk:0.5.0")
+implementation("so.prelude.android:auth-sdk:0.6.0")
 
 (Groovy)
-implementation 'so.prelude.android:auth-sdk:0.5.0'
+implementation 'so.prelude.android:auth-sdk:0.6.0'
 ```
 
 #### Email OTP login

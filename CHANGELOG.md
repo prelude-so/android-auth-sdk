@@ -4,6 +4,27 @@ Notable changes to the Prelude Android Auth SDK (`so.prelude.android:auth-sdk`).
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-06-26
+
+### Added
+- `checkOAuthEmailOTP(code, resuming)` completes an OAuth login when
+  the provider's email must be verified, alongside the value-typed
+  `OAuthEmailChallenge` handle it consumes. The handle's verification
+  token is redacted from `toString()`.
+- `PreludeAuthError.PasskeyNotConfigured`,
+  `PreludeAuthError.PasskeyRegistrationFailed`, and
+  `PreludeAuthError.PasskeyStepUnavailable` map the backend
+  `passkey_not_configured`, `passkey_registration_failed`, and
+  `passkey_step_unavailable` codes to typed errors instead of
+  falling through to `Generic`.
+
+### Changed
+- OAuth logins that require email verification now return an
+  `OAuthEmailChallenge` from `FinalizeOAuthLoginResult.OtpRequired`
+  instead of a raw challenge token. The handle carries its own
+  verification token rather than relying on a shared cookie, so
+  concurrent logins stay isolated.
+
 ## [0.5.0] - 2026-06-15
 
 ### Added

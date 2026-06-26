@@ -4,6 +4,7 @@ import kotlinx.serialization.encodeToString
 import okhttp3.RequestBody.Companion.toRequestBody
 import so.prelude.android.auth.http.ChallengeTokenResponse
 import so.prelude.android.auth.http.CheckOTPRequestBody
+import so.prelude.android.auth.http.HttpHeader
 import so.prelude.android.auth.http.JSON_MEDIA_TYPE
 import so.prelude.android.auth.http.SendOTPRequestBody
 import so.prelude.android.auth.http.StartOTPLoginRequestBody
@@ -107,15 +108,36 @@ suspend fun PreludeAuthClient.resendOTP() {
  * the issued token is malformed.
  */
 suspend fun PreludeAuthClient.checkOTP(code: String): PreludeUser {
+    // Plain login: the cookie set by `/otp` resolves the flow, so no
+    // verification token is replayed.
+    return finalizeOTPCheck(code = code, verificationToken = null)
+}
+
+/**
+ * Submit an OTP [code] to `/otp/check` and exchange the returned
+ * challenge token for a session.
+ *
+ * [verificationToken], when set, is replayed as the
+ * `X-Verification-Token` header to resume a session-less flow; a plain
+ * login leaves it null. Unauthenticated either way: the code in the
+ * body is the whole credential, so no DPoP — the device-to-token
+ * binding happens one step later, on `/login/finalize`.
+ */
+internal suspend fun PreludeAuthClient.finalizeOTPCheck(
+    code: String,
+    verificationToken: String?,
+): PreludeUser {
     val checkBody = WIRE_JSON.encodeToString(CheckOTPRequestBody(code = code))
-    val request =
+    val builder =
         buildSessionRequest("otp/check")
             .method("POST", checkBody.toRequestBody(JSON_MEDIA_TYPE))
-            .build()
+    if (!verificationToken.isNullOrEmpty()) {
+        builder.header(HttpHeader.VERIFICATION_TOKEN, verificationToken)
+    }
 
     val (response, _) =
         httpClient.sendJson(
-            request = request,
+            request = builder.build(),
             deserializer = ChallengeTokenResponse.serializer(),
         )
 
@@ -138,8 +160,11 @@ suspend fun PreludeAuthClient.checkOTP(code: String): PreludeUser {
  * Unauthenticated: the challenge token in the body identifies the
  * caller and carries its PKCE binding, so no DPoP. A configured
  * [PreludeSignalsDispatcher] attaches a fresh `dispatch_id`.
+ *
+ * Returns the issued `X-Verification-Token`, if any, so a session-less
+ * flow can replay it on `/otp/check` instead of relying on a cookie.
  */
-internal suspend fun PreludeAuthClient.sendOTP(challengeToken: String) {
+internal suspend fun PreludeAuthClient.sendOTP(challengeToken: String): String? {
     val dispatchId = dispatchSignalsIfConfigured()
     val payload =
         WIRE_JSON.encodeToString(
@@ -149,5 +174,7 @@ internal suspend fun PreludeAuthClient.sendOTP(challengeToken: String) {
         buildSessionRequest("otp")
             .method("POST", payload.toRequestBody(JSON_MEDIA_TYPE))
             .build()
-    httpClient.sendExpectingNoBody(request)
+    val response = httpClient.perform(request)
+    httpClient.throwIfNonSuccess(response)
+    return response.headers[HttpHeader.VERIFICATION_TOKEN]
 }
