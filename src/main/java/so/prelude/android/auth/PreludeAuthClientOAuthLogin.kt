@@ -51,12 +51,31 @@ sealed interface FinalizeOAuthLoginResult {
 
     /**
      * Provider email unverified; a one-time code was sent to [email].
-     * The login completes once the code is verified.
+     * Redeem [challenge] with [checkOAuthEmailOTP] to complete the
+     * login.
      */
     data class OtpRequired(
-        val challengeToken: String,
+        val challenge: OAuthEmailChallenge,
         val email: String?,
     ) : FinalizeOAuthLoginResult
+}
+
+/**
+ * An OAuth-email-link verification awaiting its one-time code.
+ * Returned in [FinalizeOAuthLoginResult.OtpRequired] and redeemed by
+ * [checkOAuthEmailOTP].
+ *
+ * Value-typed: it carries its own verification token, so concurrent
+ * logins never clash and completion doesn't lean on shared cookies.
+ * Safe to log — the token is redacted from [toString].
+ */
+class OAuthEmailChallenge internal constructor(
+    // Issued when the code was sent; replayed as the
+    // `X-Verification-Token` header on the check.
+    internal val verificationToken: String,
+) {
+    // Plain class, not data: a generated toString/copy would leak the token.
+    override fun toString(): String = "OAuthEmailChallenge(verificationToken=<redacted>)"
 }
 
 /**
@@ -145,12 +164,19 @@ suspend fun PreludeAuthClient.finalizeOAuthLogin(
         }.getOrNull()
 
     if (link?.grantMode == "oauth-email-link") {
-        // Unverified provider email: deliver the verification code,
-        // then hand the challenge back for the caller's OTP screen.
-        // The PKCE verifier isn't used on this path.
-        sendOTP(challengeToken)
+        // Unverified provider email: deliver the code and hand back a
+        // resumable handle for the caller's OTP screen. The
+        // verification token — not the challenge token — carries the
+        // flow's state to the check; the PKCE verifier isn't used here.
+        val verificationToken = sendOTP(challengeToken)
+        if (verificationToken.isNullOrEmpty()) {
+            throw PreludeAuthError.Generic(
+                code = "missing_verification_token",
+                displayMessage = "otp response did not include a verification token",
+            )
+        }
         return FinalizeOAuthLoginResult.OtpRequired(
-            challengeToken = challengeToken,
+            challenge = OAuthEmailChallenge(verificationToken = verificationToken),
             email = link.metadata?.oauthEmail,
         )
     }
@@ -158,3 +184,18 @@ suspend fun PreludeAuthClient.finalizeOAuthLogin(
     val user = finalizeLogin(challengeToken = challengeToken, codeVerifier = context.codeVerifier)
     return FinalizeOAuthLoginResult.LoggedIn(user)
 }
+
+/**
+ * Submit the email OTP [code] for an OAuth-link challenge and
+ * establish the session.
+ *
+ * Pass the [OAuthEmailChallenge] from a
+ * [FinalizeOAuthLoginResult.OtpRequired] as [resuming]; it is produced
+ * when the provider's email must be proven before login can complete.
+ * The captured verification token is replayed on `/otp/check`, so the
+ * check stays session-less and concurrent logins don't collide.
+ */
+suspend fun PreludeAuthClient.checkOAuthEmailOTP(
+    code: String,
+    resuming: OAuthEmailChallenge,
+): PreludeUser = finalizeOTPCheck(code = code, verificationToken = resuming.verificationToken)

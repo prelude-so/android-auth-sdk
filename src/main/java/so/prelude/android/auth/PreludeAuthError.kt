@@ -166,6 +166,31 @@ sealed class PreludeAuthError(
         message: String,
     ) : PreludeAuthError("SamlLoginRequired: $message")
 
+    /**
+     * App has no PasskeyConfig set (Relying Party identity is
+     * missing). Route the user to a different MFA factor.
+     */
+    class PasskeyNotConfigured(
+        message: String,
+    ) : PreludeAuthError("PasskeyNotConfigured: $message")
+
+    /**
+     * Server rejected the attestation from the registration
+     * ceremony — bad challenge, bad origin, or malformed response.
+     */
+    class PasskeyRegistrationFailed(
+        message: String,
+    ) : PreludeAuthError("PasskeyRegistrationFailed: $message")
+
+    /**
+     * verify_passkey step cannot be driven — no credentials,
+     * assertion failed, or no PasskeyConfig. Fall back to a
+     * different step (e.g. SMS OTP).
+     */
+    class PasskeyStepUnavailable(
+        message: String,
+    ) : PreludeAuthError("PasskeyStepUnavailable: $message")
+
     /** Error code not recognised by the SDK. */
     class Generic(
         val code: String,
@@ -251,6 +276,12 @@ internal fun PreludeAuthError.Companion.from(apiError: ApiErrorJson): PreludeAut
         "insufficient_scope" -> PreludeAuthError.InsufficientScope(message)
 
         "saml_login_required" -> PreludeAuthError.SamlLoginRequired(message)
+
+        "passkey_not_configured" -> PreludeAuthError.PasskeyNotConfigured(message)
+
+        "passkey_registration_failed" -> PreludeAuthError.PasskeyRegistrationFailed(message)
+
+        "passkey_step_unavailable" -> PreludeAuthError.PasskeyStepUnavailable(message)
 
         // `saml_connection_not_configured` and `saml_no_connection_for_email`
         // are 404 "resource not found" conditions for SAML connections.

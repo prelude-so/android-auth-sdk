@@ -3,11 +3,15 @@ package so.prelude.android.auth
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import so.prelude.android.auth.crypto.Pkce
+import so.prelude.android.auth.http.HttpHeader
 import java.net.URL
 import java.util.Base64
 
@@ -171,7 +175,13 @@ class OAuthLoginTest {
     fun finalize_oauthEmailLink_sendsOTP_andReturnsOtpRequired() =
         runBlocking {
             val fixture = Fixture.make()
-            fixture.http.install("/v1/session/otp", StubHttpSession.Canned(statusCode = 204))
+            fixture.http.install(
+                "/v1/session/otp",
+                StubHttpSession.Canned(
+                    statusCode = 204,
+                    headers = mapOf(HttpHeader.VERIFICATION_TOKEN to "verify-token-1"),
+                ),
+            )
             val token =
                 makeToken(
                     """{"grant_mode":"oauth-email-link","metadata":{"oauth_email":"person@example.com"}}""",
@@ -180,7 +190,9 @@ class OAuthLoginTest {
             val result = fixture.client.finalizeOAuthLogin(anyContext(), token)
 
             val otp = result as FinalizeOAuthLoginResult.OtpRequired
-            assertEquals(token, otp.challengeToken)
+            // The resumable handle captures the verification token from
+            // the /otp response, not the challenge token.
+            assertEquals("verify-token-1", otp.challenge.verificationToken)
             assertEquals("person@example.com", otp.email)
 
             // Code delivered via /otp carrying the challenge token; no
@@ -195,4 +207,69 @@ class OAuthLoginTest {
             assertEquals(0, fixture.http.requestCount(finalizePath))
             Unit
         }
+
+    @Test
+    fun finalize_oauthEmailLink_missingVerificationToken_throws() {
+        val fixture = Fixture.make()
+        // /otp succeeds but omits the verification token header.
+        fixture.http.install("/v1/session/otp", StubHttpSession.Canned(statusCode = 204))
+        val token = makeToken("""{"grant_mode":"oauth-email-link"}""")
+
+        val error =
+            assertThrows(PreludeAuthError.Generic::class.java) {
+                runBlocking { fixture.client.finalizeOAuthLogin(anyContext(), token) }
+            }
+        assertEquals("missing_verification_token", error.code)
+    }
+
+    @Test
+    fun checkOAuthEmailOTP_replaysVerificationToken_andFinalizes() =
+        runBlocking {
+            val fixture = Fixture.make()
+            fixture.http.installAll(
+                "/v1/session/otp" to
+                    StubHttpSession.Canned(
+                        statusCode = 204,
+                        headers = mapOf(HttpHeader.VERIFICATION_TOKEN to "verify-token-1"),
+                    ),
+                "/v1/session/otp/check" to OtpFixtures.checkOkResponse(challenge = "login-challenge-1"),
+                finalizePath to OtpFixtures.finalizeOkResponse(),
+            )
+            val linkToken =
+                makeToken(
+                    """{"grant_mode":"oauth-email-link","metadata":{"oauth_email":"person@example.com"}}""",
+                )
+
+            val otp =
+                fixture.client.finalizeOAuthLogin(anyContext(), linkToken)
+                    as FinalizeOAuthLoginResult.OtpRequired
+            val user = fixture.client.checkOAuthEmailOTP("123456", resuming = otp.challenge)
+            assertEquals("user-1", user.profile.userId)
+
+            // The check replays the captured verification token and
+            // stays session-less (no DPoP); the body authenticates via
+            // the code, not a challenge token.
+            val checkReq = fixture.http.requestsFor("/v1/session/otp/check").single()
+            assertEquals("verify-token-1", checkReq.header(HttpHeader.VERIFICATION_TOKEN))
+            assertNull(checkReq.header(HttpHeader.DPOP))
+            val checkBody = checkReq.bodyAsJson()
+            assertEquals("123456", checkBody["code"]!!.jsonPrimitive.content)
+            assertNull(checkBody["challenge_token"])
+
+            // login/finalize establishes the DPoP-bound session and
+            // carries the challenge token issued by /otp/check.
+            val finalizeReq = fixture.http.requestsFor(finalizePath).single()
+            assertNotNull(finalizeReq.header(HttpHeader.DPOP))
+            val finalizeBody = finalizeReq.bodyAsJson()
+            assertEquals("login-challenge-1", finalizeBody["challenge_token"]!!.jsonPrimitive.content)
+            Unit
+        }
+
+    @Test
+    fun oauthEmailChallenge_redactsVerificationToken() {
+        val challenge = OAuthEmailChallenge(verificationToken = "verify.SECRET.tok")
+        val s = challenge.toString()
+        assertFalse(s, s.contains("verify.SECRET.tok"))
+        assertTrue(s, s.contains("redacted"))
+    }
 }

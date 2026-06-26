@@ -38,4 +38,10 @@ internal object HttpHeader {
 
     /** ISO 8601 expiry paired with [REFRESH_TOKEN]. */
     const val REFRESH_TOKEN_EXPIRES_AT = "X-Refresh-Token-Expires-At"
+
+    /**
+     * Issued on `/otp`; replayed on `/otp/check` to resume a
+     * session-less OTP flow without a cookie.
+     */
+    const val VERIFICATION_TOKEN = "X-Verification-Token"
 }
