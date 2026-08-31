@@ -4,6 +4,35 @@ Notable changes to the Prelude Android Auth SDK (`so.prelude.android:auth-sdk`).
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-08-28
+
+### Added
+- Passkeys. `registerPasskey(context, RegisterPasskeyOptions)` creates
+  a credential for the signed-in user (requires a session holding
+  `prld:passkey:write`, granted via step-up),
+  `loginWithPasskey(context)` signs in without a password or OTP, and
+  `listPasskeys()` / `renamePasskey(id, nickname)` /
+  `deletePasskey(id)` manage credentials.
+  `continueStepUpWithPasskey(context, challenge)` advances a
+  `verify_passkey` step-up by asserting a passkey. Opt-in:
+  `androidx.credentials` is `compileOnly`, so apps that skip passkeys
+  pull no extra dependency. Requires Android 9 (API 28) and a Digital
+  Asset Links association declared in both directions.
+- `PreludeAuthError.PasskeyAlreadyRegistered` and
+  `PreludeAuthError.PasskeyNotSupported` cover the new ceremonies.
+- `PreludeAuthError.PasswordNotSet` (`password_not_set`), returned
+  when the user exists but has no password credential stored.
+  Distinct from `Unauthorized`; recover via a password set or reset
+  flow instead of retrying the password.
+- `PreludeAuthError.NoLoginConfig` (`no_login_config`), returned when starting an OTP login
+  while the app has no login configuration accepting the
+  identifier's channel. Create one via the Auth Management API.
+
+### Changed
+- `passkey_authenticator_blocked` maps to
+  `PreludeAuthError.PasskeyStepUnavailable` instead of falling
+  through to `Generic`.
+
 ## [0.6.0] - 2026-06-26
 
 ### Added

@@ -47,7 +47,7 @@ import so.prelude.android.auth.http.WIRE_JSON
  *     means the challenge is dead — recover via [requestStepUp].
  */
 
-private const val COMPLETED_STEP = "completed"
+internal const val COMPLETED_STEP = "completed"
 
 // MARK: - Public entry points
 
@@ -130,6 +130,7 @@ suspend fun PreludeAuthClient.requestStepUp(
             status = status,
             scope = scope,
             timeDiffSec = http.timeDiffSec,
+            passkeyAssertionOptions = body.publicKeyCredentialRequestOptions,
         )
 
     if (challenge.currentStep == COMPLETED_STEP) {
@@ -277,6 +278,9 @@ suspend fun PreludeAuthClient.submitStepUpOTP(
             status = challenge.status,
             scope = challenge.requestedScope,
             timeDiffSec = http.timeDiffSec,
+            // A multi-step flow whose next step is `verify_passkey`
+            // carries fresh assertion options.
+            passkeyAssertionOptions = body.publicKeyCredentialRequestOptions,
         )
 
     if (next.currentStep == COMPLETED_STEP) {
@@ -351,11 +355,12 @@ internal suspend fun PreludeAuthClient.refreshAfterStepUp(challengeToken: String
  * surfacing a structured failure here makes a server regression
  * actionable.
  */
-private fun PreludeAuthClient.decodeChallenge(
+internal fun PreludeAuthClient.decodeChallenge(
     token: String,
     status: PreludeStepUpStatus,
     scope: String,
     timeDiffSec: Long,
+    passkeyAssertionOptions: JsonObject? = null,
 ): PreludeStepUpChallenge {
     val jwt = JwtDecoder.decode(token)
     val payload = jwt.payload
@@ -381,6 +386,7 @@ private fun PreludeAuthClient.decodeChallenge(
         // a large positive skew would fall back through the guard
         // on devices whose clock runs far behind the server.
         expiresAt = jwt.claims.exp?.let { it + timeDiffSec } ?: Long.MIN_VALUE,
+        passkeyAssertionOptions = passkeyAssertionOptions,
     )
 }
 

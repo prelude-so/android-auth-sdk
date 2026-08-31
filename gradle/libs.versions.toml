@@ -8,6 +8,7 @@ prelude-core-sdk = "0.4.1"
 junit = "4.13.2"
 kotlinxCoroutinesTest = "1.8.1"
 androidxBrowser = "1.8.0"
+androidxCredentials = "1.5.0"
 mockk = "1.13.11"
 
 [libraries]
@@ -19,6 +20,7 @@ prelude-core-sdk = { module = "so.prelude.android:core-sdk", version.ref = "prel
 junit = { module = "junit:junit", version.ref = "junit" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinxCoroutinesTest" }
 androidx-browser = { module = "androidx.browser:browser", version.ref = "androidxBrowser" }
+androidx-credentials = { module = "androidx.credentials:credentials", version.ref = "androidxCredentials" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 
 [plugins]

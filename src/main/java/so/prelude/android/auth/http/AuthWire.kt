@@ -3,6 +3,7 @@ package so.prelude.android.auth.http
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import okhttp3.MediaType
 import okhttp3.MediaType.Companion.toMediaType
 
@@ -124,6 +125,10 @@ internal data class LoginWithPasswordRequestBody(
 @Serializable
 internal data class ChallengeTokenResponse(
     @SerialName("challenge_token") val challengeToken: String? = null,
+    // WebAuthn assertion options when the advanced step is
+    // `verify_passkey`; `null` otherwise.
+    @SerialName("public_key_credential_request_options")
+    val publicKeyCredentialRequestOptions: JsonObject? = null,
 )
 
 /**
@@ -260,6 +265,10 @@ internal data class StepUpRequestBody(
 internal data class StepUpRequestResponse(
     val status: String,
     @SerialName("challenge_token") val challengeToken: String? = null,
+    // WebAuthn assertion options when the issued step is
+    // `verify_passkey`; `null` otherwise.
+    @SerialName("public_key_credential_request_options")
+    val publicKeyCredentialRequestOptions: JsonObject? = null,
 )
 
 /**

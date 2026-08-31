@@ -1,17 +1,22 @@
 # Readme
 ### Usage
 
-The Android Auth SDK lets you sign users into your Android app and manages the resulting session — tokens, refresh, logout — against the Prelude Auth API.
+The Android Auth SDK lets you sign users into your Android app and manages the resulting session (tokens, refresh, logout) against the Prelude Auth API.
 
 It is provided as a regular Maven artifact that you can use as a normal dependency in your Android application, just add it as an implementation dependency:
 
 ```
 (Kts)
-implementation("so.prelude.android:auth-sdk:0.6.0")
+implementation("so.prelude.android:auth-sdk:0.7.0")
 
 (Groovy)
-implementation 'so.prelude.android:auth-sdk:0.6.0'
+implementation 'so.prelude.android:auth-sdk:0.7.0'
 ```
+
+### Requirements
+
+- Android minimum SDK **API 26** (Android 8.0)
+- Java **8** source and target compatibility (Kotlin `jvmTarget` 1.8)
 
 #### Email OTP login
 
@@ -63,7 +68,7 @@ if (result.valid) {
 }
 ```
 
-Or fetch the policy once and classify locally — pure function, safe to call on every keystroke:
+Or fetch the policy once and classify locally, pure function, safe to call on every keystroke:
 
 ```kotlin
 val policy = client.getPasswordCompliancy()
@@ -96,6 +101,48 @@ val next = client.submitStepUpOTP(challenge, "123456")
 // challenge in a multi-step flow — call `sendStepUpOTP` on it
 // to deliver the next code.
 ```
+
+#### Passkeys
+
+Register a passkey, sign in with one, and manage them. Passkeys need `androidx.credentials` at runtime — it is an opt-in dependency, so add it to the app that uses them:
+
+```
+implementation("androidx.credentials:credentials:1.5.0")
+// Google Password Manager provider, required below API 34:
+implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
+```
+
+Registration requires the session to hold `prld:passkey:write`, granted by a step-up — elevate first, then register. The system presents the ceremony, so pass an `Activity`:
+
+```kotlin
+val challenge = client.requestStepUp("prld:passkey:write")
+client.sendStepUpOTP(challenge)
+client.submitStepUpOTP(challenge, "123456")
+
+val registration = client.registerPasskey(
+    activity,
+    RegisterPasskeyOptions(username = "you@example.com"),
+)
+```
+
+Passwordless sign-in — no OTP or password:
+
+```kotlin
+val user = client.loginWithPasskey(activity)
+```
+
+List and remove credentials:
+
+```kotlin
+val passkeys = client.listPasskeys()
+client.deletePasskey(passkeys.first().credentialId)
+```
+
+**Prerequisite — Digital Asset Links (both directions).** The relying-party host must serve a `/.well-known/assetlinks.json` that authorizes your app by package name and signing-certificate SHA-256 fingerprint (relation `delegate_permission/common.get_login_creds`). Your app must *also* declare the association back: add a `<meta-data android:name="asset_statements" android:resource="@string/asset_statements" />` under `<application>`, where `asset_statements` is `[{"include":"https://<rp-id>/.well-known/assetlinks.json"}]`. The OS validates **both** directions before any passkey ceremony — with only the server side, registration and login fail with `RP ID cannot be validated`. Requires Android 9 (API 28) or later.
+
+Operators enable passkeys by setting the passkey configuration on the app (relying-party id, allowed origins, `login_enabled`, and the authorized `android_apps`). The relying-party host then serves the association document automatically.
+
+The step-up that grants `prld:passkey:write` must use grant mode `session-bound` or `profile-bound`, not `single-use` — registration verifies the scope against the session, so a single-use grant (which lives only on the token) is not honored.
 
 #### Change password
 
@@ -133,4 +180,4 @@ val client = PreludeAuthClient(
 )
 ```
 
-Each Prelude project has its own Auth endpoint URL — use the production URL in production, and a custom URL for staging or local development.
+Each Prelude project has its own Auth endpoint URL, use the production URL in production, and a custom URL for staging or local development.

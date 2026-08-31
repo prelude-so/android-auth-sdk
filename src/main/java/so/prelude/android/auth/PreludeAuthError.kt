@@ -109,6 +109,24 @@ sealed class PreludeAuthError(
     ) : PreludeAuthError("InvalidPassword: $message")
 
     /**
+     * Returned by `/login/email/password` when the user exists but has
+     * no password credential stored. Distinct from [Unauthorized]
+     * ("wrong password"); recover via a password reset/set flow
+     * instead of retrying the password.
+     */
+    class PasswordNotSet(
+        message: String,
+    ) : PreludeAuthError("PasswordNotSet: $message")
+
+    /**
+     * The app has no login configuration accepting this identifier's
+     * channel. Create one via the Auth Management API.
+     */
+    class NoLoginConfig(
+        message: String,
+    ) : PreludeAuthError("NoLoginConfig: $message")
+
+    /**
      * Caller is authenticated but policy (rate-limit bucket, feature
      * flag, account state) denies this action. Broader than
      * [Unauthorized].
@@ -183,6 +201,15 @@ sealed class PreludeAuthError(
     ) : PreludeAuthError("PasskeyRegistrationFailed: $message")
 
     /**
+     * The authenticator matched one of the excluded credentials:
+     * this account already holds a passkey on this device. Not a
+     * failure — offer passkey login instead.
+     */
+    class PasskeyAlreadyRegistered(
+        message: String,
+    ) : PreludeAuthError("PasskeyAlreadyRegistered: $message")
+
+    /**
      * verify_passkey step cannot be driven — no credentials,
      * assertion failed, or no PasskeyConfig. Fall back to a
      * different step (e.g. SMS OTP).
@@ -190,6 +217,15 @@ sealed class PreludeAuthError(
     class PasskeyStepUnavailable(
         message: String,
     ) : PreludeAuthError("PasskeyStepUnavailable: $message")
+
+    /**
+     * Passkeys are unavailable on this device — the OS version
+     * predates platform WebAuthn support. Route the user to a
+     * different factor.
+     */
+    class PasskeyNotSupported(
+        message: String,
+    ) : PreludeAuthError("PasskeyNotSupported: $message")
 
     /** Error code not recognised by the SDK. */
     class Generic(
@@ -251,6 +287,10 @@ internal fun PreludeAuthError.Companion.from(apiError: ApiErrorJson): PreludeAut
 
         "invalid_password" -> PreludeAuthError.InvalidPassword(message)
 
+        "password_not_set" -> PreludeAuthError.PasswordNotSet(message)
+
+        "no_login_config" -> PreludeAuthError.NoLoginConfig(message)
+
         // `auth_blocked` is the server's catch-all "auth policy
         // rejected this request"; `scope_not_allowed` is step-up's
         // specific refusal ("this session can't grant that scope");
@@ -281,7 +321,9 @@ internal fun PreludeAuthError.Companion.from(apiError: ApiErrorJson): PreludeAut
 
         "passkey_registration_failed" -> PreludeAuthError.PasskeyRegistrationFailed(message)
 
-        "passkey_step_unavailable" -> PreludeAuthError.PasskeyStepUnavailable(message)
+        "passkey_step_unavailable",
+        "passkey_authenticator_blocked",
+        -> PreludeAuthError.PasskeyStepUnavailable(message)
 
         // `saml_connection_not_configured` and `saml_no_connection_for_email`
         // are 404 "resource not found" conditions for SAML connections.
