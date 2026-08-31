@@ -104,6 +104,20 @@ class ErrorMappingTest {
     }
 
     @Test
+    fun noLoginConfig_isTyped() {
+        assertTrue(map("no_login_config") is PreludeAuthError.NoLoginConfig)
+    }
+
+    @Test
+    fun passkeyFamily_isTyped() {
+        assertTrue(map("passkey_not_configured") is PreludeAuthError.PasskeyNotConfigured)
+        assertTrue(map("passkey_registration_failed") is PreludeAuthError.PasskeyRegistrationFailed)
+        listOf("passkey_step_unavailable", "passkey_authenticator_blocked").forEach { code ->
+            assertTrue("$code → PasskeyStepUnavailable", map(code) is PreludeAuthError.PasskeyStepUnavailable)
+        }
+    }
+
+    @Test
     fun unknownCode_roundTripsThroughGeneric() {
         val err = map("totally_made_up_code", message = "hi") as PreludeAuthError.Generic
         assertEquals("totally_made_up_code", err.code)

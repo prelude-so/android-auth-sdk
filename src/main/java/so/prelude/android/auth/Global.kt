@@ -1,5 +1,7 @@
 package so.prelude.android.auth
 
+import kotlinx.serialization.json.JsonObject
+
 /**
  * A JSON value as carried by a decoded JWT payload.
  *
@@ -266,6 +268,13 @@ class PreludeStepUpChallenge internal constructor(
      * blocked challenges (no token to expire).
      */
     internal val expiresAt: Long,
+    /**
+     * WebAuthn assertion options when [currentStep] is
+     * `verify_passkey`; `null` otherwise. Drives
+     * [so.prelude.android.auth.continueStepUpWithPasskey]. Carried as
+     * raw JSON so it can be handed to the platform ceremony untouched.
+     */
+    internal val passkeyAssertionOptions: JsonObject? = null,
 ) {
     override fun toString(): String =
         "PreludeStepUpChallenge(status=$status, challengeId=$challengeId, " +

@@ -41,10 +41,15 @@ dependencies {
     // Tab. Compile-only so apps that skip social pull no extra
     // dependency; social integrators add it themselves.
     compileOnly(libs.androidx.browser)
+    // Passkeys (opt-in) drive the platform WebAuthn ceremony via the
+    // Credential Manager. Compile-only so apps that skip passkeys pull
+    // no extra dependency; passkey integrators add it themselves
+    // (plus credentials-play-services-auth on API < 34).
+    compileOnly(libs.androidx.credentials)
     // Anti-fraud signals dispatch is provided by the Prelude Android
     // SDK; wired as a project reference at dev time and swapped for
     // the published `so.prelude.android:sdk` coordinate at release.
-    implementation("so.prelude.android:sdk:0.6.1")
+    implementation("so.prelude.android:sdk:0.6.2")
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
