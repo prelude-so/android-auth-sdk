@@ -188,11 +188,8 @@ class SubmitStepUpOTPCompletionTest {
     @Test
     fun submitStepUpOTP_completed_clearsActiveStepUp_evenWhenRefreshFails() =
         runBlocking {
-            // Pin the `finally` cleanup in the completion branch: if
-            // the post-completion refresh throws, `activeStepUp` must
-            // still be `null` afterwards — otherwise observers would
-            // see a stale challenge for a flow the server has already
-            // consumed.
+            // If the post-completion refresh throws, `activeStepUp` must still
+            // clear, or observers keep a challenge the server already consumed.
             val fixture = Fixture.make()
             fixture.prePopulateStepUp(refreshToken = "refresh-v1")
             fixture.http.installAll(

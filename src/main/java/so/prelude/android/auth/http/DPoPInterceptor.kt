@@ -51,11 +51,8 @@ internal class DPoPInterceptor(
                 val skewMs = keyStore.getClockSkewMs(domain) ?: 0L
 
                 val response = next(request.signedWith(key, nonce, skewMs))
-                // RFC 9449 §8: server SHOULD echo `DPoP-Nonce` on
-                // every response. Harvest unconditionally up here
-                // so the retry paths stay focused on their own
-                // concern (use_dpop_nonce or clock skew) and read
-                // any rotated nonce from the store.
+                // RFC 9449 §8: the server SHOULD echo `DPoP-Nonce` on any
+                // response, so harvest before branching on the status.
                 val rotatedNonce = response.harvestNonce()
                 if (response.code in 200..299) return@withContext response
 
@@ -113,11 +110,8 @@ internal class DPoPInterceptor(
             return null
         }
         response.close()
-        // Persisted skew is sticky until the next
-        // `invalid_dpop_proof` either resets or clears it. After
-        // a device-clock re-sync the first request burns one
-        // server rejection to self-heal — acceptable in exchange
-        // for not invalidating skew on every refresh.
+        // The persisted skew is sticky: a later `invalid_dpop_proof` resets or
+        // clears it, so a clock re-sync self-heals one request late.
         keyStore.setClockSkewMs(domain, skewMs)
         val nonce = keyStore.getNonce(domain)?.takeIf { it.isNotEmpty() }
         return next(request.signedWith(key, nonce, skewMs)).also { it.harvestNonce() }

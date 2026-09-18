@@ -130,11 +130,8 @@ class RequestStepUpAuthTest {
     @Test
     fun concurrentProtectedCalls_each401_shareOneRefresh_thenRetryWithRotatedBearer() =
         runBlocking {
-            // Two protected calls hit 401 in parallel. Refresh is single-
-            // flight: both AutoRefresh paths must coalesce onto one
-            // /refresh round-trip, and both retries must ship the rotated
-            // bearer. The single-use refresh token can't survive two
-            // independent rotations.
+            // Two parallel 401s must coalesce onto one /refresh round-trip: the
+            // refresh token is single-use and cannot survive two rotations.
             val rotatedAccessToken =
                 "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEiLCJzaWQiOiJzZXNzLTIifQ.sig"
             val rotatedRefreshOk =

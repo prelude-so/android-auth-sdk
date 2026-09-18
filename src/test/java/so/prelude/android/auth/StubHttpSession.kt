@@ -110,11 +110,8 @@ internal class StubHttpSession : HttpSession {
                 canned to gates[path]
             }
 
-        // Suspend before delivering the response so a test that races
-        // multiple in-flight requests can rendezvous on the recorded-
-        // request count, then release in a controlled order. The gate
-        // is read once at request-arrival time so a release/install
-        // happening after this point doesn't affect this in-flight call.
+        // The gate instance is captured at request-arrival time, so a gate
+        // installed later does not suspend this in-flight call.
         gate?.await()
 
         val builder =

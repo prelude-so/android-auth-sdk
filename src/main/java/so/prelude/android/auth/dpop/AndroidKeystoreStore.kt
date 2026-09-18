@@ -127,11 +127,7 @@ internal class AndroidKeystoreStore(
     }
 
     companion object {
-        // The registry grows monotonically — one entry per domain
-        // ever observed in the process. Real apps hit single digits;
-        // a multi-tenant test runner could in theory accumulate
-        // entries indefinitely. Acceptable in exchange for a
-        // lock-free fast path on every request.
+        // Never pruned: one entry per domain ever observed in this process.
         private val locks = ConcurrentHashMap<String, ReentrantLock>()
 
         /**

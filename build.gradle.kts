@@ -47,9 +47,11 @@ dependencies {
     // (plus credentials-play-services-auth on API < 34).
     compileOnly(libs.androidx.credentials)
     // Anti-fraud signals dispatch is provided by the Prelude Android
-    // SDK; wired as a project reference at dev time and swapped for
-    // the published `so.prelude.android:sdk` coordinate at release.
-    implementation("so.prelude.android:sdk:0.6.2")
+    // SDK. Depend on the published coordinate, never a project
+    // reference: the Maven POM is generated from this declaration, so
+    // a project reference would pin consumers to whatever version the
+    // sibling module happens to carry, published or not.
+    implementation(libs.prelude.sdk)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

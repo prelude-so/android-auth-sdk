@@ -89,11 +89,8 @@ class SessionsTest {
             "Access token cache not wiped",
             accessTokenCache.getWithoutExpirationCheck(domain),
         )
-        // Pin the epoch bump directly (rather than relying on the
-        // post-wipe refresh-401 test to catch a missing
-        // `getAndIncrement()`): a refactor that drops the bump would
-        // pass the store-wipe assertions but silently break the
-        // snapshot guard in `doRefresh` / `finalizeLogin`.
+        // The bump is what invalidates a concurrent `doRefresh`'s epoch
+        // snapshot; the store-wipe assertions above would not catch its loss.
         assertTrue(
             "sessionEpoch must be bumped after a calling-session-touching revoke",
             client.sessionEpoch.get() > preEpoch,
@@ -323,14 +320,9 @@ class SessionsTest {
 
     @Test
     fun listSessions_missingRequiredFields_surfaceAsDecodingFailed_notMissingFieldException() {
-        // Loic's nit (PR #5754): every wire field defaults so a
-        // server response missing `id` or any timestamp doesn't trip
-        // a kotlinx.serialization.MissingFieldException. Empty
-        // timestamps still fail `parseInstant` and surface as the
-        // SDK's structured `decoding_failed` — same outcome as a
-        // malformed timestamp, just routed through the public error
-        // type instead of leaking a kotlinx exception. Pin so a
-        // future refactor that drops the defaults is visible.
+        // Every wire field defaults, so a missing `id` or timestamp never
+        // trips MissingFieldException; the empty timestamp fails
+        // `parseInstant` instead.
         val fixture = Fixture.make()
         fixture.preLogin()
         fixture.http.install(
@@ -538,11 +530,8 @@ class SessionsTest {
     @Test
     fun revokeSessions_postWipe_refreshSurfacesUnauthorized() =
         runBlocking {
-            // After a wipe-causing revoke the user is effectively logged
-            // out: a follow-up refresh finds empty stores, sends `/refresh`
-            // without a refresh-token header, and the server rejects with
-            // 401. Pins that the wipe is durable across the inflight slot
-            // (would-be resurrection point) and the cache fast path.
+            // After a wipe-causing revoke the session must stay dead: a
+            // follow-up refresh finds empty stores and gets a 401.
             val fixture = Fixture.make()
             fixture.preLogin()
             // Expired cache token so refresh enters its network path
@@ -566,11 +555,8 @@ class SessionsTest {
 
             val preEpoch = fixture.client.sessionEpoch.get()
             fixture.client.revokeSessions(PreludeRevokeTarget.All)
-            // Snapshot the wiped state BEFORE calling refresh — the DPoP
-            // interceptor lazily mints a fresh keypair on the next signed
-            // request, so a post-refresh assertion would see the new key
-            // and miss the regression we care about (the revoke wipe
-            // itself).
+            // Assert BEFORE refresh: the DPoP interceptor lazily mints a fresh
+            // keypair on the next signed request, which would mask the wipe.
             fixture.assertWiped(preEpoch)
 
             val caught = runCatching { fixture.client.refresh() }.exceptionOrNull()
@@ -608,13 +594,9 @@ class SessionsTest {
     @Test
     fun revokeSessions_drainsInflightRefresh_beforeWiping() =
         runBlocking {
-            // Pin the drain in `revokeSessions` for a calling-session-
-            // touching target: a `/refresh` mid-rotation must complete (or
-            // fail) before we wipe, otherwise rotated tokens land back in
-            // stores we just emptied. The same invariant the
-            // `refreshSurfacesUnauthorized` test covers transitively — pin
-            // it directly so a refactor that elides `joinIfRunning` is
-            // visible without relying on the post-wipe refresh path.
+            // A `/refresh` mid-rotation must complete before the wipe,
+            // otherwise rotated tokens land back in the stores we just
+            // emptied.
             val fixture = Fixture.make()
             fixture.preLogin()
             // Expired access token → `client.refresh()` enters the network
@@ -681,12 +663,9 @@ class SessionsTest {
     @Test
     fun revokeSessions_concurrentCallers_serialise_onRevokeMutex() =
         runBlocking {
-            // Concurrent callers must serialise on `revokeMutex` — without
-            // it, both fire `/me/revoke` concurrently and race
-            // `clearAllStores()` / double-bump the epoch. The mid-flight
-            // assertion below is what distinguishes serialisation from
-            // racing: at gate-time we should see exactly ONE request, not
-            // two.
+            // Concurrent callers must serialize on `revokeMutex` — without it,
+            // both fire `/me/revoke` and race `clearAllStores()` / double-bump
+            // the epoch.
             val fixture = Fixture.make()
             fixture.preLogin()
             fixture.http.install(
@@ -742,12 +721,9 @@ class SessionsTest {
 
     @Test
     fun revokeSessions_partialWipeFailure_stillBumpsEpoch_thenSurfacesError() {
-        // The bump must run even when `clearAllStores` throws —
-        // otherwise a concurrent `doRefresh` whose snapshot matches
-        // the unbumped epoch passes its post-network guard and writes
-        // rotated tokens back into the (partially) emptied stores.
-        // Same precedence shape as `logout`: capture wipe error,
-        // bump, re-throw.
+        // The bump must run even when `clearAllStores` throws — otherwise a
+        // concurrent `doRefresh` whose snapshot matches the unbumped epoch
+        // writes rotated tokens back into the partially emptied stores.
         val failing =
             FailingRefreshTokenStorage(InMemoryRefreshTokenStorage()).apply {
                 deleteFailure = RuntimeException("simulated delete failure")

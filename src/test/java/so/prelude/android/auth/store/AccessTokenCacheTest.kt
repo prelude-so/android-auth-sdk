@@ -290,11 +290,9 @@ class AccessTokenCacheTest {
         val cache = AccessTokenCache(clock = clock, storage = storage)
 
         val iterations = 500
-        // An AssertionError raised in a child Thread terminates that
-        // thread silently — Thread.join() returns clean and a JUnit
-        // assertion in the lambda below would never fail the test.
-        // Capture the first failure from either thread and re-throw
-        // on the JUnit thread once both have joined.
+        // An AssertionError raised in a child thread dies with that thread and
+        // Thread.join() returns clean, so capture it and re-throw on the JUnit
+        // thread after both have joined.
         val childFailure = AtomicReference<Throwable?>(null)
         val captureFirst =
             Thread.UncaughtExceptionHandler { _, e ->

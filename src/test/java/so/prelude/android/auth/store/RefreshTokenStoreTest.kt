@@ -162,11 +162,8 @@ class RefreshTokenStoreTest {
 
     @Test
     fun get_propagatesStorageReadFailure() {
-        // Distinct from the corrupt-blob path above: a corrupt blob
-        // is "the row exists but can't be parsed", which we swallow.
-        // A read fault (storage unavailable, IO error) is "we can't
-        // even tell if a row exists", which must surface so the
-        // caller can decide whether to retry or hard-logout.
+        // Unlike a corrupt blob, which is swallowed as "no record", a read fault
+        // means we cannot tell whether a row exists, so it must surface to the caller.
         val backend = FailingRefreshTokenStorage(InMemoryRefreshTokenStorage())
         backend.readFailure = IOException("disk gone")
         val store = RefreshTokenStore(backend)

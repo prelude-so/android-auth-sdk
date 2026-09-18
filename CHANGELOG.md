@@ -4,6 +4,18 @@ Notable changes to the Prelude Android Auth SDK (`so.prelude.android:auth-sdk`).
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.1] - 2026-09-18
+
+### Changed
+- `inactive_user`, returned when a deactivated user attempts to log in,
+  maps to `PreludeAuthError.Forbidden` instead of falling through to
+  `Generic`.
+
+### Fixed
+- The published POM pins `so.prelude.android:sdk` to the released
+  `0.6.2` coordinate. It previously followed the in-repo signals SDK
+  module, which could reference a version not yet on Maven Central.
+
 ## [0.7.0] - 2026-08-28
 
 ### Added

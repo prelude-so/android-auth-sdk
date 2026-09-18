@@ -128,14 +128,9 @@ suspend fun PreludeAuthClient.listSessions(
  */
 suspend fun PreludeAuthClient.revokeSessions(target: PreludeRevokeTarget) =
     revokeMutex.withLock {
-        // Capture `sid` BEFORE the round-trip so the wipe-and-bump
-        // decision is a pure function of pre-call state. Reading after
-        // the network call would be timing-sensitive: a concurrent
-        // [invalidateCache] or an auto-refresh that rotated the cached
-        // token between request build and response landing could shift
-        // the cached `sid` and cause us to skip a wipe we should have
-        // run (or vice versa). The pre-call snapshot is what the
-        // server's just-revoked id would have matched against.
+        // Capture `sid` BEFORE the round-trip: a concurrent [invalidateCache]
+        // or auto-refresh could rotate the cached `sid` mid-call and make the
+        // wipe-and-bump decision skip a wipe it should have run.
         val priorSessionId = getSessionId()
 
         val url =
@@ -160,14 +155,10 @@ suspend fun PreludeAuthClient.revokeSessions(target: PreludeRevokeTarget) =
             // we're about to empty. Same drain rationale as `logout` —
             // see the file header in `PreludeAuthClient+Logout.kt`.
             inflightRefresh.joinIfRunning()
-            // Capture (don't propagate) any wipe failure so the bump
-            // below ALWAYS runs. A partial wipe still has to win the
-            // snapshot-guard race against a concurrent `doRefresh` —
-            // letting the throw skip the bump leaves a window where a
-            // refresh whose snapshot matches the unbumped epoch passes
-            // its post-network check and writes rotated tokens back
-            // into the partially-emptied stores. Same precedence /
-            // re-throw shape as `logout`.
+            // Capture (don't propagate) any wipe failure so the bump below
+            // ALWAYS runs: skipping it leaves a window where a concurrent
+            // refresh still matching the unbumped epoch writes rotated
+            // tokens back into the partially-emptied stores.
             val wipeError: Throwable? =
                 try {
                     clearAllStores()
@@ -175,12 +166,9 @@ suspend fun PreludeAuthClient.revokeSessions(target: PreludeRevokeTarget) =
                 } catch (e: Throwable) {
                     e
                 }
-            // Bump AFTER the wipe so a refresh whose snapshot read
-            // pre-wipe tokens captured the pre-bump epoch — its
-            // post-network check sees the mismatch and bails before
-            // persisting rotated tokens back into stores we just
-            // emptied. Always runs, even on a partial wipe failure
-            // (see capture above).
+            // Bump AFTER the wipe: a refresh that snapshotted pre-wipe tokens
+            // holds the pre-bump epoch, so its post-network check bails before
+            // persisting rotated tokens into the stores we just emptied.
             sessionEpoch.getAndIncrement()
             // Re-throw so the caller sees the partial state and knows
             // to retry. The bump is already in place by the time this

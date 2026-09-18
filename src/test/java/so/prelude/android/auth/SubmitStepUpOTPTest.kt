@@ -37,14 +37,9 @@ class SubmitStepUpOTPTest {
     @Test
     fun submitStepUpOTP_expiredChallenge_throwsInvalidChallengeToken_withoutNetwork() =
         runBlocking {
-            // Server-side, expired challenges surface as `bad_check_code`
-            // — indistinguishable from a wrong code by design. Catching
-            // expiry locally lets the UI tell the user "your verification
-            // expired" rather than just "wrong code".
-            //
-            // JWT `exp` is in the past relative to the fixture's pinned
-            // clock; stub `Date:` matches the same clock so the local
-            // expiry guard compares against `now` directly.
+            // Expiry is caught locally because the server reports it as
+            // `bad_check_code`, indistinguishable from a wrong code. The token's
+            // `exp` sits before the fixture's pinned clock.
             val fixture = Fixture.make()
             fixture.prePopulateStepUp()
             val alreadyExpiredToken =
@@ -130,14 +125,9 @@ class SubmitStepUpOTPTest {
     @Test
     fun submitStepUpOTP_attachesChallengeDPoPProof_andOmitsBearer() =
         runBlocking {
-            // /otp/check on the step-up surface is authenticated via the
-            // challenge token in the body + a DPoP proof bound to the
-            // challenge's `jti`. The proof must:
-            //   * pin its `jti` to the challenge token's `jti` — one-shot
-            //     ownership of THIS challenge, not the session,
-            //   * omit any cached DPoP nonce — the challenge interceptor
-            //     is a one-shot path, ambient nonces don't apply,
-            //   * carry no bearer — nothing to refresh on this hop.
+            // /otp/check is authenticated by the challenge token in the body plus
+            // a DPoP proof bound to that challenge's `jti` — a one-shot path, so
+            // no session bearer and no ambient DPoP nonce.
             val fixture = Fixture.make()
             fixture.prePopulateStepUp()
             // Seed an ambient nonce so the absence-of-nonce assertion is

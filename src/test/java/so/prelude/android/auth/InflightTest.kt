@@ -119,15 +119,10 @@ class InflightTest {
     @Test
     fun runOrJoin_failureClearsSlotBeforeWaitersResume() =
         runBlocking {
-            // The slot-clearing contract: when the block throws, the
-            // in-flight slot must be cleared before any waiter resumes from
-            // `await()`, so a subsequent caller starts a fresh task instead
-            // of re-awaiting (and re-throwing) the settled failure.
-            //
-            // The race is probabilistic — under low contention the
-            // cleanup almost always slips in before the next call arrives,
-            // so we exercise the contract many times under contention to
-            // flush out regressions.
+            // The slot-clearing contract: when the block throws, the slot
+            // must clear before any waiter resumes from `await()`, so the
+            // next caller starts a fresh task instead of re-awaiting the
+            // settled failure. The race is probabilistic, hence the iterations.
             val iterations = 200
             val concurrent = 16
             var latchedIterations = 0
@@ -183,11 +178,8 @@ class InflightTest {
     fun runOrJoin_successClearsSlotBeforeWaitersResume() =
         runBlocking {
             // Symmetric to the failure-path test: even on success, the slot
-            // must clear before waiters return so a subsequent caller can
-            // start a fresh task. Important because PreludeAuthClient's
-            // fast-path cache check can miss (e.g. the just-stored token's
-            // expiry is `now`), and we don't want a follow-up call to join
-            // a Deferred whose value is already-completed-and-stale.
+            // must clear before waiters return, so a follow-up caller starts
+            // a fresh task instead of joining an already-settled Deferred.
             val inflight = mkInflight<Int>()
             val attempts = AtomicInteger()
 
@@ -210,11 +202,8 @@ class InflightTest {
     @Test
     fun concurrentCallers_receiveSameValueInstance() =
         runBlocking {
-            // Distinguishes "dedup works" from the wrong implementation
-            // where every caller serializes through the mutex and runs in
-            // turn. The block runs once and only once, and every caller's
-            // result is the same instance (the value the single task
-            // produced).
+            // Both concurrent callers must observe the same value instance —
+            // the joiner returns what the in-flight task produced.
             val inflight = mkInflight<Any>()
             val gate = CompletableDeferred<Unit>()
             val produced = Any()
@@ -239,12 +228,8 @@ class InflightTest {
     @Test
     fun precheckThrows_propagates_andLeavesSlotUntouched() =
         runBlocking {
-            // A precheck that throws (e.g. a future cache backend that
-            // surfaces read errors) must propagate the failure, but must
-            // NOT poison the slot — the next call should be free to start
-            // a fresh task. Pinning this contract now keeps the door open
-            // for richer precheck logic later without re-litigating the
-            // semantics.
+            // A throwing precheck must propagate the failure but must NOT
+            // poison the slot: the next call is free to start a fresh task.
             val inflight = mkInflight<String>()
             var blockRan = false
 
@@ -274,22 +259,14 @@ class InflightTest {
     @Test
     fun runOrJoin_externalCancellation_doesNotLatchSlot() =
         runBlocking {
-            // When the in-flight task is cancelled externally (e.g. a
-            // future `close()` cancels the Inflight scope's children), the
-            // coroutine becomes inactive, and any suspension inside the
-            // cleanup `finally` — specifically the contended-acquire path
-            // of `Mutex.withLock` — would throw `JobCancellationException`
-            // before resetting `current`. That latches the cancelled
-            // deferred in the slot, exactly the race this class exists to
-            // prevent. The cleanup runs under `withContext(NonCancellable)`
-            // so it can complete.
-            //
-            // Forcing the contended path is load-bearing: `Mutex.tryLock`
-            // is non-suspending and never throws on cancellation, so an
-            // uncontended cleanup would mask the bug. We hold the internal
-            // mutex via reflection from outside, cancel the inflight
-            // task's children, give the finally a head-start on
-            // `lockSuspend`, then release.
+            // Guards the cancellation latch: without the cleanup's
+            // `NonCancellable` wrap, a cancelled task's contended
+            // `Mutex.withLock` throws before clearing `current`, latching the
+            // cancelled deferred in the slot. Holding the internal mutex by
+            // reflection forces that contended path — `tryLock` never throws
+            // on cancellation, so an uncontended cleanup would mask the bug;
+            // the delay before releasing gives the cleanup time to reach the
+            // suspending acquire.
             val privateScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
             try {
                 val inflight = Inflight<String>(privateScope)
@@ -329,12 +306,8 @@ class InflightTest {
                 }
                 firstCallerJob.await()
 
-                // Slot must be clear: a follow-up caller starts a fresh
-                // task and observes its block running. Without the
-                // NonCancellable wrap, `current` would still point at the
-                // cancelled deferred and this assertion would fail
-                // intermittently (whenever the contended-acquire path was
-                // hit).
+                // Slot must be clear: without the cleanup's NonCancellable
+                // wrap, `current` would still hold the cancelled deferred.
                 val freshRan = AtomicBoolean(false)
                 inflight.runOrJoin(block = {
                     freshRan.set(true)
@@ -376,24 +349,17 @@ class InflightTest {
     @Test
     fun joinIfRunning_withInflightTask_awaitsCompletion() =
         runBlocking {
-            // The drain semantic: callers must observe the task's side
-            // effects before proceeding. Logout uses this to ensure a
-            // mid-flight refresh has finished rotating the refresh token
-            // before logout snapshots — `/revoke` signed with a spent
-            // token would be rejected by the server.
+            // The drain semantic: callers must observe the task's side effects
+            // before proceeding (logout must snapshot the rotated token).
             val inflight = mkInflight<Int>()
             val gate = CompletableDeferred<Unit>()
             val started = CompletableDeferred<Unit>()
             val sideEffectComplete = AtomicBoolean(false)
 
             coroutineScope {
-                // Unnamed: structured concurrency means coroutineScope
-                // waits for this child before returning, and the runner's
-                // value isn't asserted on directly. Naming it would force
-                // a `runner.await()` at the bottom whose `Int` return
-                // type bubbles up through coroutineScope → runBlocking →
-                // the @Test method, which JUnit 4 rejects (test methods
-                // must return Unit).
+                // Left unnamed on purpose: a trailing `runner.await()` would
+                // make the test method return `Int` through coroutineScope and
+                // runBlocking, which JUnit 4 rejects.
                 async {
                     inflight.runOrJoin(block = {
                         started.complete(Unit)
@@ -426,11 +392,8 @@ class InflightTest {
     @Test
     fun joinIfRunning_swallowsTaskFailure() =
         runBlocking {
-            // Drained for side effects only: callers don't care whether
-            // the in-flight task succeeded or failed, just that it has
-            // settled. Logout couldn't reasonably propagate the
-            // refresh's error anyway — its own `/revoke` round-trip is
-            // about to run and surface its own outcome.
+            // Drained for side effects only: callers don't care whether the
+            // in-flight task succeeded or failed, just that it has settled.
             val inflight = mkInflight<Int>()
             val gate = CompletableDeferred<Unit>()
             val started = CompletableDeferred<Unit>()
@@ -465,17 +428,10 @@ class InflightTest {
     @Test
     fun joinIfRunning_propagatesCallerCancellation() =
         runBlocking {
-            // Cooperative cancellation must propagate so structured
-            // concurrency holds. If `joinIfRunning` swallowed
-            // [CancellationException] under a generic `catch (_: Throwable)`,
-            // a parent that cancelled this caller would block forever
-            // waiting for a child that quietly resumed past the await.
-            //
-            // The setup pins a never-completing task in flight, launches a
-            // joiner, cancels it, and asserts the joiner's job ends up
-            // cancelled. If `joinIfRunning` had eaten the
-            // CancellationException, the joiner would have completed
-            // normally instead — exactly the regression we're guarding.
+            // Cooperative cancellation must propagate: if `joinIfRunning`
+            // swallowed [CancellationException] under its generic
+            // `catch (_: Throwable)`, a cancelled caller would resume past
+            // the await and strand its parent.
             val inflight = mkInflight<Int>()
             val started = CompletableDeferred<Unit>()
 
@@ -658,12 +614,9 @@ class InflightTest {
     @Test
     fun replace_propagatesCallerCancellation() =
         runBlocking {
-            // Same rule the `joinIfRunning_propagatesCallerCancellation`
-            // test pins: cooperative cancellation must propagate through
-            // the drain loop so structured concurrency holds. If the
-            // drain swallowed [CancellationException] the
-            // `while (true)` would keep spinning and the caller's
-            // completion exception would be `null` instead of cancelled.
+            // Cancellation must propagate through the drain loop: if it were
+            // swallowed, `replace`'s `while (true)` would keep spinning
+            // instead of surfacing the cancellation to the caller.
             val inflight = mkInflight<Int>()
             val started = CompletableDeferred<Unit>()
 

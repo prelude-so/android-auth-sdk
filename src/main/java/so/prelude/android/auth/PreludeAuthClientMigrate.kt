@@ -59,14 +59,9 @@ suspend fun PreludeAuthClient.migrate(options: MigrateOptions): PreludeUser {
 }
 
 private suspend fun PreludeAuthClient.doMigrate(token: String): PreludeUser {
-    // Nothing is persisted mid-flow; an app killed here simply
-    // re-runs the migration on next launch.
-    //
     // Epoch guard: captured before the FIRST hop and threaded into
-    // [finalizeLogin]'s pre-persist re-check. A capture at finalize
-    // entry would miss a logout that completes between the hops, and
-    // this task outlives a cancelled caller — it would persist a
-    // fresh session after that logout returned.
+    // [finalizeLogin]'s pre-persist re-check. Capturing at finalize entry
+    // would miss a logout that completes between the hops.
     val startEpoch = sessionEpoch.get()
     val codeVerifier = Pkce.generateCodeVerifier()
     val dispatchId = dispatchSignalsIfConfigured()

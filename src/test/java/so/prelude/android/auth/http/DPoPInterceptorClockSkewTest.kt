@@ -176,11 +176,8 @@ class DPoPInterceptorClockSkewTest {
             )
         }
 
-    // (f) Stale persisted skew + sub-threshold server skew →
-    // clear the stale value so the next request self-heals. Without
-    // this, a post-NTP-sync device keeps replaying e.g. +30s forever
-    // because every retry computes ~0 ms drift (below threshold) and
-    // returns early without touching the store.
+    // (f) Stale persisted skew + sub-threshold server skew must clear the
+    // stored value; otherwise a resynced device replays the old skew forever.
     @Test
     fun invalidDPoPProof_subThresholdSkew_clearsStalePersistedSkew() =
         runTest {

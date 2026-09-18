@@ -135,12 +135,9 @@ internal class AccessTokenCache(
         return try {
             cacheJson.decodeFromString(AccessTokenEntry.serializer(), blob)
         } catch (_: Exception) {
-            // Treat a corrupt blob the same as "no entry": the next
-            // refresh will overwrite it. Catch is intentionally broad —
-            // the documented type is `SerializationException`, but the
-            // parser has historically thrown `IllegalArgumentException`
-            // on a few malformed inputs, and hydrate must not crash the
-            // app on launch regardless of which one surfaces.
+            // Treat a corrupt blob as "no entry"; the next refresh overwrites
+            // it. Broad catch on purpose: the parser also throws
+            // `IllegalArgumentException`, and hydrate must not crash at launch.
             null
         }
     }

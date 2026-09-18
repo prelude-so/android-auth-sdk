@@ -72,11 +72,10 @@ class RefreshClientTest {
     @Test
     fun refresh_sendsRefreshTokenAsHeader_notCookie() =
         runBlocking {
-            // Backend mints `__Host-refresh_<appId>` as a cookie for browser
-            // flows (handled by OkHttp's CookieJar). Mobile uses the
-            // X-Refresh-Token header so RefreshTokenStorage stays the
-            // single source of truth — the in-memory cookie jar doesn't
-            // survive cold start.
+            // The backend also emits `__Host-refresh_<appId>` as a cookie for
+            // browser flows, but mobile must read the X-Refresh-Token header:
+            // OkHttp's cookie jar is in-memory and doesn't survive cold start,
+            // so RefreshTokenStorage stays the single source of truth.
             val fixture = Fixture.make()
             fixture.keyStore.getOrCreate(fixture.domain)
             fixture.refreshTokenStore.set(
@@ -139,16 +138,9 @@ class RefreshClientTest {
     @Test
     fun refresh_revokedTokenReplay_surfacesUnauthorized_andLeavesStoreIntact() =
         runBlocking {
-            // Server-side rotation contract: once v_n+1 is minted, v_n is
-            // revoked. If the SDK ever ships a stale token (e.g. an
-            // out-of-band rotation, or someone manually wedging a prior
-            // value back in), the server returns 401/`unauthorized`.
-            // Pin the failure shape end-to-end:
-            //   * caller sees `PreludeAuthError.Unauthorized` — distinct
-            //     from a transport error or a generic 4xx,
-            //   * the store is NOT silently wiped — wipe-on-401 belongs
-            //     to logout(), not to refresh(); a transient backend 401
-            //     (MITM, deploy bug) shouldn't lose the user's credential.
+            // Replaying a revoked refresh token must surface
+            // `PreludeAuthError.Unauthorized` and leave the store intact:
+            // wipe-on-401 belongs to logout(), not to refresh().
             val fixture = Fixture.make()
             fixture.keyStore.getOrCreate(fixture.domain)
             fixture.refreshTokenStore.set(
@@ -185,13 +177,9 @@ class RefreshClientTest {
     @Test
     fun refresh_accessExpiry_isClockSkewAdjusted() =
         runBlocking {
-            // Device clock 5 minutes ahead of the server. `timeDiffSec`
-            // picks up local - server = +300s; doRefresh's
-            // storeAccessToken adds the offset to the server-supplied
-            // `expires_at` so the cache compares against the local
-            // clock, not the server's. Mirrors the OTP / password
-            // login path's skew tests for the refresh surface — a
-            // regression in finalizeLogin's math could miss this one.
+            // Device clock 5 minutes ahead of the server: `timeDiffSec` picks up
+            // local - server = +300s and storeAccessToken adds it to the
+            // server-supplied `expires_at` so the cache uses the local clock.
             val fixture = Fixture.make()
             fixture.keyStore.getOrCreate(fixture.domain)
             fixture.refreshTokenStore.set(

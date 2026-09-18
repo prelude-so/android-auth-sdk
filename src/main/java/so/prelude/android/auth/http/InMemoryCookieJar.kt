@@ -33,13 +33,8 @@ import kotlin.concurrent.withLock
 internal class InMemoryCookieJar : CookieJar {
     private val byHost = ConcurrentHashMap<String, MutableList<Cookie>>()
 
-    // One lock per host bucket to serialise the read-modify-write
-    // (de-dup + prune) inside `saveFromResponse`. Allocated via
-    // `computeIfAbsent` so two concurrent first-saves for the same
-    // host can't end up holding detached locks (the Kotlin `getOrPut`
-    // extension is `get` + conditional `put`, not atomic, so the
-    // losing thread would otherwise mutate a list that's no longer in
-    // the map).
+    // One lock per host bucket, serializing the de-dup + prune
+    // read-modify-write in `saveFromResponse`.
     private val locks = ConcurrentHashMap<String, ReentrantLock>()
 
     override fun saveFromResponse(
@@ -49,11 +44,9 @@ internal class InMemoryCookieJar : CookieJar {
         if (cookies.isEmpty()) return
 
         val host = url.host
-        // `computeIfAbsent` is atomic on `ConcurrentHashMap`; the
-        // Kotlin `getOrPut` extension is not (it's `get` + conditional
-        // `put`), so under concurrent first-saves the losing caller
-        // would otherwise hold a detached bucket + lock pair and its
-        // writes would silently disappear.
+        // `computeIfAbsent` is atomic on `ConcurrentHashMap`; Kotlin's
+        // `getOrPut` is not, so a racer could end up with a detached
+        // bucket + lock pair whose writes are silently lost.
         val bucket = byHost.computeIfAbsent(host) { mutableListOf() }
         val lock = locks.computeIfAbsent(host) { ReentrantLock() }
         lock.withLock {

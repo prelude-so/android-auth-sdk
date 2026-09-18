@@ -68,12 +68,9 @@ class StepUpEdgeCasesTest {
     @Test
     fun requestStepUp_neverAutoFires_OTP_regardlessOfStatusOrStep() =
         runBlocking {
-            // The SDK's contract is now caller-driven OTP delivery —
-            // `requestStepUp` returns the challenge handle and never
-            // fires `/otp` itself. Pin that on the awkward shape that
-            // would have tempted an old auto-fire path: status `review`
-            // + step `verify_email`. /otp intentionally NOT installed
-            // so a regression fails loudly with "no canned response".
+            // The no-auto-fire contract is pinned on the awkward shape (status
+            // `review` + step `verify_email`): /otp is intentionally NOT
+            // installed, so a regression fails with "no canned response".
             val fixture = Fixture.make()
             fixture.prePopulateStepUp()
             val reviewOtpToken =
@@ -104,12 +101,9 @@ class StepUpEdgeCasesTest {
     @Test
     fun requestStepUp_directlyCompletedChallenge_throwsInvalidChallengeToken() =
         runBlocking {
-            // Defensive: `/stepup/request` is contracted to emit flows
-            // that need at least one verification step. A response that
-            // arrives already at `completed` is a server contract
-            // violation; surface as InvalidChallengeToken so a backend
-            // regression is loud rather than handing the caller a handle
-            // that submitStepUpOTP would reject as expired.
+            // `/stepup/request` must emit a flow with at least one
+            // verification step; an already-`completed` response is a server
+            // contract violation, so the SDK refuses the handle.
             val fixture = Fixture.make()
             fixture.prePopulateStepUp()
             fixture.http.install(
@@ -158,11 +152,8 @@ class StepUpEdgeCasesTest {
                 runBlocking { fixture.client.submitStepUpOTP(expired, code = "123456") }
             }
 
-            // Swap to a fresh, non-expired token; the next requestStepUp
-            // must hand back a clean challenge that submitStepUpOTP
-            // accepts. /otp/check installed only on the recovery path —
-            // any leftover state from the expired flow trying to drive a
-            // /otp/check would have failed loudly before this install.
+            // /otp/check is installed only here, on the recovery path: any
+            // leftover state from the expired flow would have failed earlier.
             fixture.http.install(
                 "/v1/session/stepup/request",
                 StepUpFixtures.stepUpResponse("continue", StepUpFixtures.verifyEmailToken),

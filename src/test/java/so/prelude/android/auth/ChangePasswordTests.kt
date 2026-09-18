@@ -190,11 +190,8 @@ class ChangePasswordTests {
     @Test
     fun changePassword_attachesBearer_butNotDPoPProof() =
         runBlocking {
-            // /me/password/reset is bearer-only on the server: the
-            // access token + `prld:pwd:write` scope is the entire
-            // credential. Sending a DPoP proof would be ignored at best,
-            // and on strict proxies short-circuits the request before the
-            // server can return its real status.
+            // /me/password/reset is bearer-only on the server: the access
+            // token + `prld:pwd:write` scope is the entire credential.
             val fixture = Fixture.make()
             fixture.prePopulate()
             fixture.http.installAll(
@@ -221,11 +218,8 @@ class ChangePasswordTests {
     @Test
     fun changePassword_insufficientScope_throwsStructured_andSkipsRefresh() =
         runBlocking {
-            // 403 / `insufficient_scope` is the canonical "you forgot to
-            // step up" error. Must surface as the structured type so UIs
-            // can branch on it, and the post-success refresh MUST NOT
-            // run — the change didn't land, the scoped bearer is still
-            // server-valid for a retry.
+            // The post-success refresh must NOT run when the change
+            // fails: the scoped bearer is still server-valid for a retry.
             val fixture = Fixture.make()
             fixture.prePopulate()
             fixture.http.install(
@@ -255,12 +249,9 @@ class ChangePasswordTests {
     @Test
     fun changePassword_authBlocked_throwsForbidden_andSkipsRefresh() =
         runBlocking {
-            // 403 / `auth_blocked` — server policy denial distinct from
-            // `insufficient_scope` (need step-up). Should map to
-            // `Forbidden` so UIs render "your account state forbids
-            // this" rather than offering step-up as the recovery.
-            // Pins the [PreludeAuthError.from] mapping for this code
-            // end-to-end against the change-password surface.
+            // `auth_blocked` is a policy denial, not a missing scope: it
+            // must map to `Forbidden` so UIs don't offer step-up as the
+            // recovery.
             val fixture = Fixture.make()
             fixture.prePopulate()
             fixture.http.install(
@@ -339,11 +330,8 @@ class ChangePasswordTests {
     @Test
     fun changePassword_refreshFails_stillReturnsSuccess_andCacheIsInvalidated() =
         runBlocking {
-            // The change itself succeeded — a follow-up refresh failure
-            // must NOT leak as a thrown error. The cache invalidate ran
-            // first (inside the replace block, before doRefresh), so the
-            // next protected call's auto-refresh interceptor will drive
-            // the same refresh.
+            // The change itself succeeded, so a follow-up refresh failure
+            // must NOT leak as a thrown error.
             val fixture = Fixture.make()
             fixture.prePopulate()
             fixture.http.installAll(
@@ -380,14 +368,10 @@ class ChangePasswordTests {
     @Test
     fun changePassword_invalidateInsideReplaceBlockRunsBeforeRefresh() =
         runBlocking {
-            // Sequencing matters inside the replace block: invalidate
-            // must run BEFORE doRefresh. If it ran AFTER, doRefresh would
-            // mint and cache the unscoped token, and invalidate would
-            // immediately mark it as `expiresAt = now - 1` — leaving the
-            // cache fast-path missing on the very next call. We pin the
-            // post-state: cache holds the unscoped token at a future
-            // expiry, proving doRefresh's write was NOT clobbered by a
-            // post-refresh invalidate.
+            // Ordering invariant: invalidate must run BEFORE doRefresh
+            // inside the replace block. Reversed, invalidate would mark
+            // the freshly minted token `expiresAt = now - 1` and the
+            // cache fast-path would miss on the very next call.
             val fixture = Fixture.make()
             fixture.prePopulate()
             fixture.http.installAll(
@@ -413,15 +397,10 @@ class ChangePasswordTests {
     @Test
     fun changePassword_invalidateStorageFails_isNonFatal() =
         runBlocking {
-            // The bookkeeping invalidate writes to persistent storage
-            // before mutating in-memory state (storage-before-memory
-            // invariant in [AccessTokenCache]). When the storage write
-            // throws, the in-memory entry stays at its scoped value.
-            // Per the surface contract, this must NOT propagate to the
-            // caller — the password change already succeeded, and the
-            // auto-refresh interceptor will drive the drop on the next
-            // protected call. Pins that the caller doesn't see a thrown
-            // error from a follow-up cleanup hop.
+            // [AccessTokenCache] writes storage before memory, so a
+            // failing storage write leaves the in-memory entry at its
+            // scoped value. The change already succeeded, so this must
+            // NOT propagate to the caller.
             val failing = FailingAccessTokenStorage(InMemoryAccessTokenStorage())
             val fixture = Fixture.make(accessTokenStorage = failing)
             fixture.prePopulate()
@@ -436,14 +415,9 @@ class ChangePasswordTests {
             // Does NOT throw — bookkeeping failures are non-fatal.
             fixture.client.changePassword(RedactedString("new-secret-password"))
 
-            // Storage failure rolled back the invalidate (storage-before-
-            // memory ordering), so the in-memory cache still holds the
-            // scoped entry at its original expiry. doRefresh did not
-            // run because the failure inside the replace block
-            // short-circuited it; the contract is that the next
-            // protected call's auto-refresh interceptor self-heals from
-            // here, which the higher-level interceptor tests already
-            // cover.
+            // The invalidate threw before mutating memory and
+            // short-circuited doRefresh, so the cache still holds the
+            // original scoped entry.
             val cached = fixture.accessTokenCache.getWithoutExpirationCheck(fixture.domain)
             assertNotNull(cached)
             assertEquals(scopedAccessToken, cached!!.accessToken)
@@ -452,11 +426,8 @@ class ChangePasswordTests {
     @Test
     fun changePassword_cancelledMidBookkeeping_propagatesCancellation() =
         runBlocking {
-            // The bookkeeping helper distinguishes [CancellationException]
-            // from other [Exception] so structured concurrency stays
-            // correct — without that distinction, cancelling a coroutine
-            // running changePassword would silently complete, leaving the
-            // parent hung on an "uncancelled" child.
+            // The bookkeeping helper rethrows [CancellationException]
+            // instead of swallowing it, so cancellation isn't absorbed.
             val fixture = Fixture.make()
             fixture.prePopulate()
             fixture.http.installAll(
@@ -498,15 +469,9 @@ class ChangePasswordTests {
     fun changePassword_drainsInflightRefresh_thenInstallsScopeDroppingRefresh() =
         runBlocking {
             // A vanilla `refresh()` racing in [Inflight] may have been
-            // processed server-side BEFORE /me/password/reset consumed
-            // the scope, and would mint a still-scoped access token.
-            // Joining its result via runOrJoin would land that scoped
-            // token in the cache — exactly the leak the bookkeeping is
-            // supposed to prevent. End-to-end check that the
-            // [Inflight.replace] shape `refreshAfterStepUp` already uses
-            // is wired through here too: drain the racing refresh, then
-            // install our own that overwrites the cache with the
-            // unscoped token.
+            // processed before the server consumed the scope, so joining
+            // it via runOrJoin would land a still-scoped token in the
+            // cache. Hence drain-then-replace rather than piggybacking.
             val fixture = Fixture.make()
             fixture.prePopulate(refreshToken = "refresh-v1")
             // Force the cache expired so refresh() actually hits the
@@ -547,11 +512,8 @@ class ChangePasswordTests {
                         fixture.client.changePassword(RedactedString("new-secret-password"))
                     }
 
-                // Release; the vanilla refresh completes (mints the
-                // still-scoped token), the drain returns, and the
-                // bookkeeping refresh runs (mints the unscoped token).
-                // Install a second canned response so the second
-                // /refresh returns the unscoped token.
+                // Swap in the unscoped response before releasing the gate,
+                // so the post-drain bookkeeping refresh mints that token.
                 fixture.http.install(
                     "/v1/session/refresh",
                     refreshOk(
@@ -568,11 +530,8 @@ class ChangePasswordTests {
             // the post-drain bookkeeping refresh.
             assertEquals(2, fixture.http.requestCount("/v1/session/refresh"))
 
-            // Final cached token is the unscoped one: the bookkeeping's
-            // post-drain refresh overwrote whatever the vanilla refresh
-            // had landed. If we'd run runOrJoin instead of replace, the
-            // bookkeeping would have piggybacked on the racing result
-            // and the cache would hold the still-scoped token here.
+            // The post-drain bookkeeping refresh must have overwritten the
+            // racing refresh's token; runOrJoin would leave the scoped one.
             val cached = fixture.accessTokenCache.getWithoutExpirationCheck(fixture.domain)
             assertNotNull(cached)
             assertEquals(unscopedAccessToken, cached!!.accessToken)
@@ -640,11 +599,8 @@ class ChangePasswordTests {
     @Test
     fun changePassword_failure_clearsActiveStepUp() =
         runBlocking {
-            // Symmetric to the success case: the handle clears on every
-            // outcome via `finally`. A stale challenge surviving a failed
-            // reset would let an observer believe a flow is still open
-            // when it's already been consumed by the request — and the
-            // recovery path is the same as success (re-request step-up).
+            // Symmetric to the success case: `finally` clears the handle
+            // on every outcome, so a failed reset leaves no stale challenge.
             val fixture = Fixture.make()
             fixture.prePopulate()
             fixture.http.install(

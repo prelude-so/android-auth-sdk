@@ -147,11 +147,8 @@ class LogoutTests {
     @Test
     fun logout_wipesAllStoresBeforeRevokeReturns() =
         runBlocking {
-            // Wipe-before-network: a successful `/revoke` is the easy
-            // case. The dangerous case is a `/revoke` that hangs or fails
-            // — the stores must already be empty by the time the network
-            // call is in flight, so a stuck network can't leave a stale
-            // credential live on the device.
+            // Every store must already be empty while `/revoke` is in flight,
+            // so a hanging or failing call can't leave a live credential behind.
             val fixture = Fixture.make()
             fixture.prePopulate()
             fixture.client.setActiveStepUp(
@@ -175,11 +172,9 @@ class LogoutTests {
     @Test
     fun logout_revokeProof_carriesCurrentDPoPNonce() =
         runBlocking {
-            // /revoke is signed inline (not via DPoPInterceptor) because
-            // the wipe runs first; the proof must still pull the
-            // most-recently-cached nonce so the server can validate it
-            // without forcing a fresh challenge round-trip on a hop that
-            // can't retry — the keystore has been wiped by then.
+            // `/revoke` is signed inline from a pre-wipe snapshot, so the proof
+            // must carry the last cached nonce: unlike every other hop, a nonce
+            // challenge can't be retried once the keystore is wiped.
             val fixture = Fixture.make()
             fixture.prePopulate(nonce = "logout-nonce-abc")
             fixture.http.install("/v1/session/revoke", StubHttpSession.Canned(statusCode = 204))
@@ -235,11 +230,8 @@ class LogoutTests {
     @Test
     fun logout_signsRevokeWithDpop_andCarriesRefreshToken() =
         runBlocking {
-            // Verifies the inline-signed proof path: logout snapshots the
-            // DPoP key + nonce + refresh token before wiping, then signs
-            // `/revoke` manually rather than going through DPoPInterceptor
-            // (which would mint a fresh keypair against the now-empty
-            // store and produce a `jkt` mismatch on the server).
+            // Signed from the pre-wipe snapshot: DPoPInterceptor would mint a
+            // fresh keypair against the emptied store and mismatch the `jkt`.
             val fixture = Fixture.make()
             fixture.prePopulate(refreshToken = "refresh-v1")
             fixture.http.install("/v1/session/revoke", StubHttpSession.Canned(statusCode = 204))
@@ -262,11 +254,8 @@ class LogoutTests {
     @Test
     fun logout_withoutAnyCredentials_skipsRevoke_andStillWipes() =
         runBlocking {
-            // No DPoP key, no refresh token: there's nothing to revoke
-            // against. We still run the local wipe (idempotent) but skip
-            // the `/revoke` round-trip — calling it would attach an
-            // unsigned proof and a missing refresh-token header, which
-            // the server would reject as malformed.
+            // Nothing to revoke against: an unsigned proof with no
+            // refresh-token header would be rejected as malformed.
             val fixture = Fixture.make()
             // Don't call prePopulate — stores are empty.
             fixture.client.logout()
@@ -380,22 +369,15 @@ class LogoutTests {
                 apiError("unauthorized", "no refresh token", status = 401),
             )
 
-            // `supervisorScope` so a failing `async` child doesn't cascade
-            // and abort the scope before we've had a chance to assert on
-            // the caught exception. We *expect* the racing refresh to
-            // fail; under a plain `coroutineScope` the failure would
-            // surface as the scope's terminal exception even after
-            // `await()` consumed it.
+            // `supervisorScope` so the expected refresh failure doesn't abort
+            // the scope before we can assert on the caught exception.
             supervisorScope {
                 val logout = async { fixture.client.logout() }
                 // Wait for logout to have wiped stores and started /revoke.
                 waitUntil { fixture.http.requestCount("/v1/session/revoke") >= 1 }
 
-                // Now a racing refresh kicks off. The cache was already
-                // invalidated by logout's wipe, so refresh enters its
-                // network path and finds an empty refresh-token store —
-                // server rejects with 401, which the SDK surfaces as
-                // Unauthorized.
+                // The wipe already invalidated the cache, so the racing refresh
+                // goes to the network with no refresh token and the server 401s.
                 val refresh = async { fixture.client.refresh() }
                 val caught = runCatching { refresh.await() }.exceptionOrNull()
                 assertTrue(
@@ -417,11 +399,8 @@ class LogoutTests {
     @Test
     fun logout_partialWipeFailure_stillFiresRevoke_thenSurfacesWipeError() =
         runBlocking {
-            // A failing store delete must not short-circuit the other
-            // three deletes *or* prevent `/revoke` from firing. The
-            // captured wipe error is re-thrown after the server attempt —
-            // surfacing it lets the caller know to retry, which a silent
-            // success would hide.
+            // A failing delete must not short-circuit the remaining wipes or
+            // prevent `/revoke`; the captured error is re-thrown afterwards.
             val failing =
                 FailingRefreshTokenStorage(InMemoryRefreshTokenStorage()).apply {
                     deleteFailure = RuntimeException("simulated delete failure")
@@ -449,11 +428,8 @@ class LogoutTests {
     @Test
     fun logout_partialWipe_andRevokeFailure_surfacesWipeError() =
         runBlocking {
-            // When the wipe AND `/revoke` both fail, surface the wipe
-            // error: a stale credential left on a (potentially compromised)
-            // device is more dangerous than a server session the server's
-            // TTL eventually clears, and silencing the wipe error would
-            // also hide the partial state from the caller.
+            // The wipe error wins: a credential left on the device is worse
+            // than a server session the server's TTL eventually clears.
             val failing =
                 FailingRefreshTokenStorage(InMemoryRefreshTokenStorage()).apply {
                     deleteFailure = RuntimeException("simulated delete failure")
@@ -483,11 +459,8 @@ class LogoutTests {
     @Test
     fun logout_partialAccessTokenCacheFailure_surfacesWipeError() =
         runBlocking {
-            // Symmetric to the refresh-token failure test: a failing
-            // access-token cache delete must surface as the thrown error,
-            // and the other three deletes must still complete. Pins the
-            // four-delete contract end-to-end against any single failing
-            // store, not just the refresh-token one.
+            // Symmetric to the refresh-token failure test, but for the
+            // access-token cache.
             val failing =
                 FailingAccessTokenStorage(InMemoryAccessTokenStorage()).apply {
                     deleteFailure = RuntimeException("simulated cache delete failure")
@@ -514,14 +487,9 @@ class LogoutTests {
     @Test
     fun logout_signingFailureDuringRevoke_silentlyDegrades_localWipeStillCompletes() =
         runBlocking {
-            // `KeyPermanentlyInvalidatedException` (and any other
-            // signing failure surfaced via [DPoPKeyStoreError]) is
-            // unrecoverable on this hardware: there is no path to
-            // attempt `/revoke` without the original DPoP private key.
-            // The local wipe still happened, so the device cannot use
-            // this session, and the server session expires on its own
-            // via TTL — surfacing the error to the caller would only
-            // be noise. Pins the silent-degrade contract.
+            // A signing failure is unrecoverable: `/revoke` cannot be signed
+            // without the original key. The local wipe landed and the server
+            // session expires via TTL, so the error is silenced.
             val fixture = Fixture.make()
             fixture.prePopulate()
             // Replace the materialised key with one that throws on
@@ -555,13 +523,8 @@ class LogoutTests {
     @Test
     fun logout_secondCallAfterFirstCompletes_runsEndToEnd() =
         runBlocking {
-            // Regression for the [Inflight] slot-clearing contract on the
-            // logout path: after a logout settles, the slot must clear so
-            // a follow-up `logout()` produces a fresh `/revoke` round-trip
-            // rather than re-awaiting the prior task. The slot-clearing
-            // discipline is already covered by `InflightTest`, but this
-            // pins the public surface — we never want a regression where
-            // a second logout silently no-ops.
+            // After a logout settles the [Inflight] slot must clear, so a
+            // second `logout()` files its own `/revoke` instead of no-oping.
             val fixture = Fixture.make()
             fixture.prePopulate()
             fixture.http.install("/v1/session/revoke", StubHttpSession.Canned(statusCode = 204))
@@ -594,23 +557,9 @@ class LogoutTests {
     @Test
     fun logout_callerCancelledDuringRevoke_propagatesCancellation() =
         runBlocking {
-            // Pins the cancellation invariant for `logout()`: a caller
-            // cancelled while `/revoke` is in flight observes
-            // [CancellationException], not a normal return.
-            //
-            // `doLogout` keeps the invariant in two ways that we want to
-            // notice if either ever drifts:
-            //   1. The runCatching wrappers around the snapshot reads and
-            //      the `/revoke` round-trip use `.rethrowingCancellation()`
-            //      so cancellation isn't silently turned into a `null`
-            //      result or a swallowed exception.
-            //   2. The terminal `revokeError?.let { throw it }` re-raises
-            //      whatever `/revoke` surfaced, including
-            //      [CancellationException].
-            //
-            // A regression in either layer would make `logout()` return
-            // normally under cancellation — exactly what this test fails
-            // on.
+            // Pins the cancellation invariant: a caller cancelled while
+            // `/revoke` is in flight must observe [CancellationException]
+            // rather than returning normally.
             val fixture = Fixture.make()
             fixture.prePopulate()
             fixture.http.install("/v1/session/revoke", StubHttpSession.Canned(statusCode = 204))
@@ -629,14 +578,8 @@ class LogoutTests {
                     caller.cancel()
                     caller.join()
 
-                    // `getCompletionExceptionOrNull` reflects what the
-                    // coroutine body actually surfaced — distinct from
-                    // `isCancelled`, which only records that `cancel()`
-                    // was called. Asserting on the body's exception is
-                    // what proves the rethrow guards are doing their
-                    // job: had `runCatching` swallowed the cancellation,
-                    // `logout()` would have returned normally and the
-                    // completion exception would be `null`.
+                    // Assert on the completion cause rather than `isCancelled`:
+                    // the boolean can't say which exception the caller observed.
                     val cause = caller.getCompletionExceptionOrNull()
                     assertTrue(
                         "logout must surface CancellationException to the caller, was $cause",
@@ -655,11 +598,8 @@ class LogoutTests {
     @Test
     fun loginWithPassword_racedByLogout_doesNotResurrectSession() =
         runBlocking {
-            // A logout that lands while `/login/finalize` is in flight has
-            // already wiped the stores we're about to write — the epoch
-            // guard inside `finalizeLogin` catches the mismatch and
-            // surfaces Unauthorized rather than persisting tokens that
-            // refer to a session the caller just revoked.
+            // Logout bumps the session epoch while `/login/finalize` is in
+            // flight; finalize's epoch guard bails instead of persisting.
             val fixture = Fixture.make()
             fixture.prePopulate() // gives logout a session to revoke
             fixture.http.installAll(

@@ -77,15 +77,10 @@ internal class OkHttpSession(
                         call: Call,
                         e: IOException,
                     ) {
-                        // When the coroutine is cancelled, `invokeOnCancellation`
-                        // fires `call.cancel()`, which OkHttp reports back through
-                        // this callback with an `IOException("Canceled")` — on its
-                        // own dispatcher thread, after the continuation is already
-                        // dead. `resumeWithException` has no `onCancellation`
-                        // overload (unlike `resume`), so resuming an inactive
-                        // continuation would throw `IllegalStateException` on a
-                        // thread with no handler and crash the process.
-                        // See kotlinx.coroutines issues #712 and #830.
+                        // A cancelled call lands here as IOException("Canceled")
+                        // after the continuation is dead; `resumeWithException`
+                        // has no `onCancellation` overload, so resuming would
+                        // crash the process. kotlinx.coroutines #712, #830.
                         if (!continuation.isActive) return
                         continuation.resumeWithException(
                             when (e) {
