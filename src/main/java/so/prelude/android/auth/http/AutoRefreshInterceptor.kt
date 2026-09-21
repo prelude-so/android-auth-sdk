@@ -55,11 +55,8 @@ internal class AutoRefreshInterceptor(
 
         if (response.code != 401) return response
 
-        // A sibling caller may have refreshed while our 401 was
-        // in flight. If the cache now holds a different token,
-        // skip invalidate+refresh — `invalidateCache` would
-        // re-expire the fresh entry and force a redundant
-        // /refresh round-trip.
+        // A sibling caller may have refreshed while our 401 was in flight;
+        // invalidating now would re-expire that fresh token.
         val fresh = getAccessToken()
         if (fresh.isNotEmpty() && fresh != sentToken) {
             response.close()
@@ -69,13 +66,9 @@ internal class AutoRefreshInterceptor(
         try {
             invalidateCache()
         } catch (e: Throwable) {
-            // Storage failure during invalidate is not something we can
-            // recover from inline — the contract is that it propagates.
-            // Before throwing out, close the 401 so its connection goes
-            // back to OkHttp's pool now rather than waiting for the
-            // body's finalizer. `Throwable` (not `Exception`) so
-            // cancellation also closes; we re-throw verbatim, so
-            // cooperative cancellation still propagates.
+            // Close the 401 before rethrowing so its connection returns to
+            // OkHttp's pool instead of waiting on the body's finalizer.
+            // `Throwable` so cancellation closes the response too.
             response.close()
             throw e
         }
@@ -91,19 +84,12 @@ internal class AutoRefreshInterceptor(
                 response.close()
                 throw e
             } catch (_: Exception) {
-                // Refresh itself failed — return the ORIGINAL 401 so upstream
-                // retry loops treat auth as non-transient. Crucially we do NOT
-                // wrap the retry below in this catch: a transient network error
-                // on the retry of a now-authenticated request must propagate
-                // so the caller can distinguish auth issues from transport.
-                //
-                // `Exception` (not `Throwable`) so JVM-level `Error` subtypes
-                // (`OutOfMemoryError`, `StackOverflowError`, `LinkageError`,
-                // …) propagate. Swallowing those would surface as a phantom
-                // 401 to the caller and lose any chance of crashing on the
-                // real fault. `CancellationException` is a `RuntimeException`
-                // and would be caught here, but the explicit handler above
-                // claims it first.
+                // Refresh failed — return the ORIGINAL 401 so upstream retry
+                // loops treat auth as non-transient. The retry below is
+                // deliberately outside this catch so its own errors propagate.
+                // `Exception`, not `Throwable`, so JVM `Error`s propagate; keep
+                // it below the `CancellationException` catch, which it would
+                // otherwise swallow.
                 return response
             }
 

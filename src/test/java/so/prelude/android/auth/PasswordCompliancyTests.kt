@@ -141,11 +141,8 @@ class PasswordCompliancyTests {
     @Test
     fun getPasswordCompliancy_useDPoPNonce_doesNotRetry() =
         runBlocking {
-            // /password/compliancy is unauthenticated; no DPoPInterceptor
-            // is on the chain. A server that mistakenly emits
-            // `use_dpop_nonce` here has no SDK-side handler to flip into
-            // the challenge/retry path — the error must surface verbatim
-            // on the first attempt, never loop into a second round-trip.
+            // /password/compliancy is unauthenticated: no DPoPInterceptor on the
+            // chain, so a `use_dpop_nonce` error must surface, never be retried.
             val fixture = Fixture.make()
             fixture.http.install(
                 "/v1/session/password/compliancy",
@@ -283,12 +280,9 @@ class PasswordCompliancyTests {
 
     @Test
     fun validate_countsUnicodeCodePoints_notUtf16Chars() {
-        // A regional-indicator flag (`🇫🇷`) is one grapheme cluster
-        // but two code points (each above the BMP — 4 UTF-16 chars
-        // total). The classifier counts code points via
-        // `String.codePointAt` iteration. Counting `String.length`
-        // (UTF-16 chars) would say 4, counting graphemes would say 1
-        // — neither matches the server. Pins the iteration step.
+        // A regional-indicator flag (`🇫🇷`) is one grapheme cluster, two code
+        // points, four UTF-16 chars. The classifier counts code points, so the
+        // server-matching answer here is 2.
         val flag = "🇫🇷" // 🇫🇷 — RIS_F + RIS_R
         // Sanity-check the test input: 4 UTF-16 chars but 2 code points.
         assertEquals(4, flag.length)
@@ -354,11 +348,8 @@ class PasswordCompliancyTests {
 
     @Test
     fun validate_supplementaryDigit_isCountedOnce() {
-        // Mathematical bold digit `𝟏` (U+1D7CF) is a single code
-        // point in `Nd` general category but two UTF-16 chars. It
-        // must count once toward `numbers` and once toward `length`,
-        // not twice. Pins that the classifier walks code points and
-        // increments `length` / classification once per code point.
+        // Mathematical bold digit `𝟏` (U+1D7CF) is one `Nd` code point but two
+        // UTF-16 chars: it must count once toward `numbers` and `length`.
         val rules =
             PreludePasswordCompliancy(
                 minLength = 1,

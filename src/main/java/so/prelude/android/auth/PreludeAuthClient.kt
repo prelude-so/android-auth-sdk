@@ -205,11 +205,8 @@ class PreludeAuthClient internal constructor(
         baseUrl = baseUrl,
         hostOverride = hostOverride,
         timeout = timeout,
-        // Share the cookie jar between OkHttp and the SDK so
-        // logout / revoke can wipe per-domain cookies — server-set
-        // markers (`verification`, `did`) outliving the session
-        // would let a post-logout observer of the jar see a flow
-        // that's no longer valid.
+        // Shared cookie jar so logout / revoke can wipe the server-set
+        // per-domain markers (`verification`, `did`) with the session.
         httpClient = newDefaultHttpClient(context, baseUrl, hostOverride, timeout),
         keyStore = newDefaultKeyStore(context, baseUrl, hostOverride),
         refreshTokenStore = newDefaultRefreshStore(context, baseUrl, hostOverride),
@@ -334,18 +331,13 @@ class PreludeAuthClient internal constructor(
      *   `null` and ship an empty body.
      */
     internal suspend fun doRefresh(stepUpToken: String? = null): PreludeUser {
-        // Capture the epoch at entry; we'll re-check it before
-        // persisting rotated tokens so a [logout] that bumps it while
-        // our network call is in flight can invalidate whatever we
-        // were about to write. Pairs with the same guard in
-        // [finalizeLogin].
+        // Capture the epoch at entry; it is re-checked before persisting
+        // rotated tokens, so a [logout] that bumps it mid-flight invalidates
+        // what we were about to write.
         val startEpoch = sessionEpoch.get()
 
-        // Snapshot the stored refresh token before the round-trip.
-        // SharedPreferences read failures propagate — silently
-        // dropping the header would just produce a 401, which the
-        // interceptor catch above swallows into a misleading "refresh
-        // failed" rather than the real cause.
+        // Store read failures propagate on purpose: dropping the header would
+        // just produce a 401 that masks the real cause.
         val refreshToken = refreshTokenStore.get(domain)?.refreshToken
 
         val builder = buildSessionRequest("refresh")
@@ -353,11 +345,6 @@ class PreludeAuthClient internal constructor(
             builder.header(HttpHeader.REFRESH_TOKEN, refreshToken)
         }
         if (!stepUpToken.isNullOrEmpty()) {
-            // Step-up refresh: the body's `step_up_token` is the
-            // signal the server uses to mint a scoped access token.
-            // Default body is `{}` (set by [buildSessionRequest]) for
-            // vanilla refreshes — overwrite only when we have a
-            // token to ship.
             val payload =
                 WIRE_JSON.encodeToString(
                     StepUpRefreshRequestBody(stepUpToken = stepUpToken),
@@ -388,12 +375,9 @@ class PreludeAuthClient internal constructor(
             throw PreludeAuthError.Unauthorized("session revoked during refresh")
         }
 
-        // `/refresh` rotates the refresh token on every successful
-        // call (single-use — limits blast radius if a token leaks).
-        // Persist the rotated token BEFORE the access token so a
-        // disk failure here doesn't leave us with a fresh access
-        // token alongside a stale (server-revoked) refresh on disk —
-        // the next refresh would 401 with no recovery.
+        // Refresh tokens are single-use: persist the rotated one BEFORE the
+        // access token, or a failure here leaves a fresh access token beside
+        // a server-revoked refresh and the next refresh 401s with no recovery.
         val rotated = http.headers[HttpHeader.REFRESH_TOKEN]
         if (!rotated.isNullOrEmpty()) {
             val rotatedExpiresAt = http.headers[HttpHeader.REFRESH_TOKEN_EXPIRES_AT]
@@ -407,11 +391,8 @@ class PreludeAuthClient internal constructor(
             )
         }
 
-        // Decode-and-validate the new access token BEFORE persisting
-        // it. If the server returned a malformed JWT we'd otherwise
-        // stick a bad token in the cache and the next refresh()'s
-        // fast path would throw on it forever — a stuck state that
-        // only invalidateCache() or token expiry could clear.
+        // Decode-and-validate before persisting: a malformed JWT in the
+        // cache would make every later refresh() fast path throw on it.
         val user = makeUserForRefresh(body.accessToken)
         storeAccessToken(body.accessToken, body.expiresAt, http.timeDiffSec)
         return user

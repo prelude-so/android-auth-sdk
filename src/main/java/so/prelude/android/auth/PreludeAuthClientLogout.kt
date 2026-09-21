@@ -79,10 +79,7 @@ suspend fun PreludeAuthClient.logout() {
     // coalesced callers piggyback on the elected caller's work.
     inflightLogout.runOrJoin {
         // Drain any in-flight refresh so the snapshot below reads the
-        // rotated refresh token, not the pre-rotation one. `/refresh`
-        // rotates on every successful call; `/revoke` signed with a
-        // spent token is rejected by the server. `joinIfRunning`
-        // swallows the refresh's failure — we proceed regardless.
+        // rotated token: `/revoke` with a spent one is rejected.
         inflightRefresh.joinIfRunning()
         doLogout()
     }
@@ -97,19 +94,11 @@ suspend fun PreludeAuthClient.logout() {
  * the file header.
  */
 private suspend fun PreludeAuthClient.doLogout() {
-    // Snapshot before the wipe: `/revoke` must sign itself with the
-    // session's pinned DPoP keypair, but the standard [DPoPInterceptor]
-    // would `getOrCreate` against the now-empty store and produce a
-    // proof whose `jkt` doesn't match the one the server pinned at
-    // login. Capture the handle here, sign the request manually below.
-    //
-    // `runCatching` on the reads is load-bearing: a corrupted store
-    // entry fails `get` but still succeeds `delete` (delete matches by
-    // key alone, no decode), so the wipe below MUST run even if we
-    // can't snapshot — invariant (4) takes priority. Losing a snapshot
-    // just means we can't sign the `/revoke` proof, which is degradable;
-    // leaving the user stuck in a logged-in state they can't clear is
-    // not.
+    // Snapshot before the wipe: `/revoke` must sign with the session's
+    // pinned DPoP keypair, but [DPoPInterceptor] would `getOrCreate`
+    // against the now-empty store and mint a proof whose `jkt` doesn't
+    // match the one the server pinned at login. The reads use
+    // `runCatching` so a corrupted entry can't abort the wipe below.
     val dpopKey: DPoPKey? =
         runCatching { keyStore.get(domain) }
             .rethrowingCancellation()
@@ -152,16 +141,10 @@ private suspend fun PreludeAuthClient.doLogout() {
         return
     }
 
-    // Build the `/revoke` request — signs the DPoP proof inline.
-    // A signing failure here (e.g. `KeyPermanentlyInvalidatedException`
-    // after a lock-screen credential change, or an AVD snapshot
-    // rollback that retired the AndroidKeystore key) is unrecoverable
-    // on this hardware: there is no path to attempt `/revoke` without
-    // the original DPoP private key. The local wipe already succeeded,
-    // so the device can no longer use this session and the server
-    // session expires on its own via TTL. Silently degrade to "skip
-    // `/revoke`" rather than surfacing a noise error the caller can't
-    // act on.
+    // Build the `/revoke` request, signing the DPoP proof inline. A
+    // signing failure is unrecoverable without the original DPoP private
+    // key, so degrade to skipping `/revoke`: the local wipe already ran
+    // and the server session expires on its own via TTL.
     val request =
         runCatching {
             buildRevokeRequest(dpopKey, dpopNonce, dpopSkewMs, refreshToken)
@@ -171,14 +154,8 @@ private suspend fun PreludeAuthClient.doLogout() {
                 return
             }
 
-    // Send `/revoke` and capture (don't throw) any failure — we
-    // surface the wipe error in preference. The local-state failure
-    // is the more security-critical of the two: the server session
-    // expires on its own via TTL, but a stale credential left on a
-    // (potentially compromised) device does not. Silencing
-    // `wipeError` would also hide the partial state from the caller,
-    // who would then have no signal that a retry of `logout()` is
-    // needed.
+    // Send `/revoke` and capture (don't throw) any failure: the wipe
+    // error wins over it — see invariant (5) in the file header.
     val revokeError =
         runCatching {
             httpClient.sendExpectingNoBody(request)
@@ -252,24 +229,17 @@ internal fun PreludeAuthClient.clearAllStores() {
         }
     }
 
-    // [AndroidKeystoreStore.delete] also wipes the per-domain nonce
-    // and clock skew, but a failure during the keystore op would
-    // skip that step. Calling [deleteNonce] / [deleteClockSkewMs]
-    // explicitly afterwards preserves the wipe contract so a
-    // partial keystore failure can't leave either dangling. The
-    // redundant calls on the success path are no-ops.
+    // [AndroidKeystoreStore.delete] also wipes the per-domain nonce and
+    // clock skew, but a failing keystore op would skip that; the explicit
+    // deletes below are no-ops on the success path.
     attempt { keyStore.delete(domain) }
     attempt { keyStore.deleteNonce(domain) }
     attempt { keyStore.deleteClockSkewMs(domain) }
     attempt { refreshTokenStore.delete(domain) }
     attempt { accessTokenCache.clear(domain) }
-    // Wipe per-host cookies (`verification`, `did`, …). Keyed on
-    // `baseUrl.host` — the jar buckets by request URL host, which
-    // diverges from [domain] whenever `hostOverride` is set. The
-    // jar is in-memory and process-scoped on Android — without
-    // this wipe, the next login flow on the same client would see
-    // server-set markers from the just-revoked session. `null`
-    // when a test injected a custom [HttpClient].
+    // Wipe per-host cookies: the jar buckets by request URL host, which
+    // diverges from [domain] whenever `hostOverride` is set. Without this,
+    // the next login would see markers from the revoked session.
     attempt { httpClient.cookieJar?.clear(baseUrl.host.lowercase()) }
     // In-memory step-up handle, not a store — `AtomicReference.set`
     // can't throw, so it lives outside `attempt`. Logically part of

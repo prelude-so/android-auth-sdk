@@ -128,11 +128,8 @@ class RedactedString(
 ) {
     override fun toString(): String = "<redacted>"
 
-    // `equals` / `hashCode` deliberately omitted: comparing two
-    // secrets by content is rarely what callers want, and providing
-    // the operator would invite use cases that defeat the redaction
-    // (e.g. a hash leaking the secret via timing). Callers that need
-    // identity comparison can use `===`.
+    // `equals` / `hashCode` are deliberately omitted: content comparison
+    // of a secret invites uses that defeat the redaction; use `===`.
 }
 
 /**

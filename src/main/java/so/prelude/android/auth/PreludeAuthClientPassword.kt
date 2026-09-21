@@ -84,13 +84,9 @@ suspend fun PreludeAuthClient.loginWithPassword(options: LoginWithPasswordOption
             dispatchId = dispatchId,
         )
 
-    // Encode and attach in one chained expression so the only named
-    // local holding the plaintext is `body` above; the encoded JSON
-    // and the OkHttp `RequestBody` retain their own references for
-    // the duration of the call. JVM `String`s can't be wiped, so
-    // this isn't a security boundary — it's a "minimise the named
-    // references a future contributor could accidentally log"
-    // boundary.
+    // Encoded and attached inline so `body` stays the only named local
+    // holding the plaintext. JVM strings can't be wiped, so this only
+    // minimizes the named references a contributor could accidentally log.
     val request =
         buildSessionRequest("login/email/password")
             .method("POST", WIRE_JSON.encodeToString(body).toRequestBody(JSON_MEDIA_TYPE))
@@ -100,11 +96,9 @@ suspend fun PreludeAuthClient.loginWithPassword(options: LoginWithPasswordOption
         httpClient.sendJson(
             request = request,
             deserializer = ChallengeTokenResponse.serializer(),
-            // Unauthenticated endpoint — no DPoP, no bearer. The DPoP
-            // interceptor would happily mint a proof here, but the server
-            // doesn't expect one and signing with a key the user hasn't
-            // bound to a session yet leaks the device's `jkt` into the
-            // anti-fraud audit log against an unauthenticated identity.
+            // Unauthenticated endpoint: the DPoP interceptor would mint a
+            // proof the server doesn't expect, leaking the device's `jkt` into
+            // the anti-fraud audit log against an unauthenticated identity.
             interceptors = emptyList(),
         )
 

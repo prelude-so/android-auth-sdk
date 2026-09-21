@@ -134,12 +134,9 @@ suspend fun PreludeAuthClient.requestStepUp(
         )
 
     if (challenge.currentStep == COMPLETED_STEP) {
-        // `/stepup/request` issuing an already-completed challenge is
-        // a server contract violation — by design the request endpoint
-        // emits flows that need at least one verification step. Surface
-        // as a structured error so a backend regression is loud rather
-        // than handing the caller a handle [submitStepUpOTP] would
-        // reject as expired.
+        // `/stepup/request` only emits flows needing at least one
+        // verification step, so an already-completed challenge is a server
+        // contract violation, not a handle the caller can use.
         throw PreludeAuthError.InvalidChallengeToken(
             "stepup/request returned an already-completed challenge",
         )
@@ -223,11 +220,8 @@ suspend fun PreludeAuthClient.submitStepUpOTP(
         )
     }
 
-    // Local expiry guard. The server rejects an expired challenge as
-    // `bad_check_code` (indistinguishable from a wrong code, by
-    // design — so brute-forcers can't tell expiry from miss), so
-    // catching it here lets the UI surface "expired, request a fresh
-    // one" cleanly.
+    // Local expiry guard: the server rejects an expired challenge as
+    // `bad_check_code`, indistinguishable from a wrong code.
     if (challenge.expiresAt < clock().epochSecond) {
         throw PreludeAuthError.InvalidChallengeToken(
             "Step-up challenge expired; call requestStepUp(scope:) again",
@@ -284,20 +278,10 @@ suspend fun PreludeAuthClient.submitStepUpOTP(
         )
 
     if (next.currentStep == COMPLETED_STEP) {
-        // The post-completion refresh consumes `advanced` and mints
-        // an access token carrying the granted scope. Going through
-        // [refreshAfterStepUp] (rather than the regular [refresh])
-        // ensures we (1) wait for any vanilla refresh to settle —
-        // it would mint an unscoped token — and (2) install our
-        // scoped refresh in the inflight slot so any concurrent
-        // protected request piggybacks on the scoped result.
-        //
-        // Clear the handle on every outcome via `finally`: the
-        // challenge has been spent server-side either way, so
-        // leaving the previous step's handle visible after a
-        // failed refresh would mislead observers into thinking the
-        // flow is still in progress. Caller retries by re-
-        // requesting step-up.
+        // [refreshAfterStepUp] rather than [refresh]: a vanilla refresh in
+        // the inflight slot would mint an unscoped token and lose the granted
+        // scope. Clear the handle either way — the challenge is spent
+        // server-side even when the refresh fails.
         try {
             refreshAfterStepUp(advanced)
         } finally {
@@ -330,14 +314,10 @@ suspend fun PreludeAuthClient.submitStepUpOTP(
  */
 internal suspend fun PreludeAuthClient.refreshAfterStepUp(challengeToken: String): PreludeUser =
     inflightRefresh.replace {
-        // Invalidate INSIDE the installed task so the cache write a
-        // racing vanilla refresh just landed (during [Inflight.replace]'s
-        // drain) is clobbered before our scoped refresh runs. If we
-        // invalidated outside the slot, vanilla's post-drain cache
-        // write would still leak an UNSCOPED token to any sibling
-        // [refresh]'s cache fast-path until our network call wrote
-        // back. Doing it here shrinks the leak window to "between
-        // slot install and dispatch of this block".
+        // Invalidate INSIDE the installed task: from outside, the cache write
+        // a racing vanilla refresh lands during [Inflight.replace]'s drain
+        // would leak an UNSCOPED token to a sibling [refresh]'s cache
+        // fast-path until our network call writes back.
         invalidateCache()
         doRefresh(stepUpToken = challengeToken)
     }
@@ -376,15 +356,10 @@ internal fun PreludeAuthClient.decodeChallenge(
         currentStep = payload.stringField("current_step"),
         requestedScope = scope,
         token = token,
-        // Adjust the server-reported expiry by the observed clock
-        // skew so the local expiry guard compares against the
-        // device's wall clock. [Long.MIN_VALUE] when `exp` is
-        // missing (older challenge token shapes) — guarantees the
-        // local expiry guard fires regardless of the device clock,
-        // matching the server's `bad_check_code` rejection of an
-        // unexpiring token. Skew-adjusting `0L` would be ambiguous:
-        // a large positive skew would fall back through the guard
-        // on devices whose clock runs far behind the server.
+        // Server `exp` shifted by the observed clock skew so the local expiry
+        // guard can compare against the device clock. [Long.MIN_VALUE] when
+        // `exp` is missing (older token shapes), so the guard fires whatever
+        // the device clock reads; a skew-adjusted 0L would not.
         expiresAt = jwt.claims.exp?.let { it + timeDiffSec } ?: Long.MIN_VALUE,
         passkeyAssertionOptions = passkeyAssertionOptions,
     )

@@ -117,18 +117,10 @@ internal suspend fun PreludeAuthClient.finalizeLogin(
         )
     }
 
-    // Decode-and-validate the new access token BEFORE persisting it.
-    // Storing first would land a malformed JWT in the cache and the
-    // next refresh()'s fast path would throw on it forever — same
-    // stuck-state failure mode the doRefresh ordering guards against.
-    //
-    // The shared JWT decoder reuses [PreludeAuthError.InvalidChallengeToken]
-    // for any malformed JWT, including the access token the server just
-    // minted. Surfacing that name on a successful credential exchange
-    // misattributes the failure (the *challenge* token was fine —
-    // /otp/check accepted it and /login/finalize returned a 200), so
-    // re-map to a structured access-token error. Defensive guard
-    // against a backend regression; never expected to fire in practice.
+    // Validate the access token before persisting it: a malformed JWT in
+    // the cache would make refresh()'s fast path throw on it forever.
+    // The shared decoder reports any malformed JWT as
+    // [InvalidChallengeToken], so re-map it — the challenge token was fine.
     val user =
         try {
             makeUser(body.accessToken)

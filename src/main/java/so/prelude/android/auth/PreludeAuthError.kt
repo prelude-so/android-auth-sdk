@@ -291,16 +291,9 @@ internal fun PreludeAuthError.Companion.from(apiError: ApiErrorJson): PreludeAut
 
         "no_login_config" -> PreludeAuthError.NoLoginConfig(message)
 
-        // `auth_blocked` is the server's catch-all "auth policy
-        // rejected this request"; `scope_not_allowed` is step-up's
-        // specific refusal ("this session can't grant that scope");
-        // `not_configured` / `direct_scope_identifier_mismatch` are
-        // step-up policy refusals; `email_verification_not_allowed`
-        // is OTP's "email channel is disabled" refusal;
-        // `invalid_verify_configuration` / `suspended_account` /
-        // `invalid_api_key` are app-level policy denials;
-        // `saml_connection_disabled` is a disabled SSO connection.
-        // All fold into `Forbidden` so UIs can branch on a single case.
+        // Every server-side policy refusal folds into `Forbidden` so UIs can
+        // branch on a single case. Bare `not_configured` is step-up's policy
+        // refusal, not a 404 like `saml_connection_not_configured` below.
         "forbidden",
         "auth_blocked",
         "scope_not_allowed",
@@ -309,6 +302,7 @@ internal fun PreludeAuthError.Companion.from(apiError: ApiErrorJson): PreludeAut
         "email_verification_not_allowed",
         "invalid_verify_configuration",
         "suspended_account",
+        "inactive_user",
         "invalid_api_key",
         "saml_connection_disabled",
         -> PreludeAuthError.Forbidden(message)

@@ -19,11 +19,8 @@ class StepUpConcurrencyTest {
     @Test
     fun submitStepUpOTP_completion_drainsInflightRefresh_thenInstallsScopedRefresh() =
         runBlocking {
-            // A vanilla `refresh()` racing in the inflight slot would
-            // mint an UNSCOPED access token; the post-completion refresh
-            // must drain it first, then install a scoped refresh that
-            // any concurrent caller piggybacks on. End-to-end check that
-            // [Inflight.replace] is wired through correctly.
+            // A vanilla `refresh()` racing in the inflight slot would mint an
+            // UNSCOPED access token, so the completion must drain it first.
             val fixture = Fixture.make()
             fixture.prePopulateStepUp(refreshToken = "refresh-v1")
             // Force an expired access token so refresh() actually hits the
@@ -98,11 +95,8 @@ class StepUpConcurrencyTest {
     @Test
     fun logoutDuringSubmitCompletion_surfacesUnauthorizedFromRefresh() =
         runBlocking {
-            // A logout that lands while `/otp/check` is in flight has
-            // already revoked the session by the time the post-completion
-            // refresh runs. The refresh's epoch guard catches the bumped
-            // counter (or the empty refresh-token store maps to 401) and
-            // surfaces Unauthorized — not a successful resurrection.
+            // A logout landing while `/otp/check` is in flight must make the
+            // post-completion refresh fail rather than resurrect the session.
             val fixture = Fixture.make()
             fixture.prePopulateStepUp(refreshToken = "refresh-v1")
             fixture.http.installAll(

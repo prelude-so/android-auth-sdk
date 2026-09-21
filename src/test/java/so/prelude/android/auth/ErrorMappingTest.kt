@@ -81,6 +81,7 @@ class ErrorMappingTest {
             "email_verification_not_allowed",
             "invalid_verify_configuration",
             "suspended_account",
+            "inactive_user",
             "invalid_api_key",
             "saml_connection_disabled",
         ).forEach { code ->

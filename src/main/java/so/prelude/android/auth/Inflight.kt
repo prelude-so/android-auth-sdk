@@ -124,13 +124,9 @@ internal class Inflight<T>(
                 try {
                     existing.await()
                 } catch (e: CancellationException) {
-                    // Cooperative cancellation must propagate so
-                    // structured concurrency holds — same rule as
-                    // `joinIfRunning`. Swallowing here would let a
-                    // cancelled caller carry on past `replace` and
-                    // silently strand its parent (e.g. the
-                    // post-step-up refresh would keep spinning even
-                    // after the surrounding flow was cancelled).
+                    // Cooperative cancellation must propagate so structured
+                    // concurrency holds: swallowing it would let a cancelled
+                    // caller carry on past `replace` and strand its parent.
                     throw e
                 } catch (_: Throwable) {
                     // Drained for side-effects only — callers don't
@@ -162,17 +158,10 @@ internal class Inflight<T>(
                 try {
                     block()
                 } finally {
-                    // [NonCancellable] is load-bearing: when the block raises
-                    // [CancellationException] the coroutine is already in a
-                    // cancelled state, and any suspension inside
-                    // [Mutex.withLock] — at minimum the contended-acquire
-                    // path — would re-throw before clearing [current], which
-                    // would latch the cancelled deferred in the slot.
-                    //
-                    // `===` is defensive: the only writer to [current] is
-                    // [start], which only runs while holding [mutex] AND
-                    // [current] is null, so a clobber should be impossible.
-                    // The guard costs nothing and documents the invariant.
+                    // [NonCancellable] is load-bearing: the block may raise
+                    // [CancellationException], and a suspension inside
+                    // [Mutex.withLock] would then re-throw before [current]
+                    // is cleared, latching the cancelled deferred in the slot.
                     withContext(NonCancellable) {
                         mutex.withLock {
                             if (current === task) current = null

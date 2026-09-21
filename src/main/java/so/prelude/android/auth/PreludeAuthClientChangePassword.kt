@@ -103,31 +103,20 @@ import so.prelude.android.auth.http.WIRE_JSON
 suspend fun PreludeAuthClient.changePassword(newPassword: RedactedString) {
     val body = ChangePasswordRequestBody(password = newPassword.value)
 
-    // Encode and attach in one chained expression so the only named
-    // local holding the plaintext is `body` above; the encoded JSON
-    // and the OkHttp `RequestBody` retain their own references for
-    // the duration of the call. Same minimisation as
-    // `loginWithPassword` — see that file for the JVM-specific
-    // caveat (immutable `String`s can't be wiped).
+    // Chained deliberately: `body` above stays the only named local holding
+    // the plaintext (JVM `String`s can't be wiped — see [RedactedString]).
     val request =
         buildSessionRequest("me/password/reset")
             .method("POST", WIRE_JSON.encodeToString(body).toRequestBody(JSON_MEDIA_TYPE))
             .build()
 
-    // No DPoP on `/me/password/reset`: the server runs only the
-    // bearer-checking authorization middleware on this route — the
-    // access token + `prld:pwd:write` scope is the entire credential.
-    // Sending a proof would be ignored at best; on strict proxies it
-    // is dead weight that can short-circuit the request before the
-    // server can return its real status. The auto-refresh path still
-    // recovers a stale bearer: a 401 here triggers [refresh], which
-    // signs `/refresh` with [dpopInterceptor] itself.
+    // No DPoP on `/me/password/reset`: the route only checks the bearer, so
+    // the access token plus `prld:pwd:write` is the whole credential. Don't
+    // add the proof back — strict proxies can reject it before the server
+    // replies.
     //
-    // Clear the step-up handle on every outcome via `finally`: the
-    // request was driven by `prld:pwd:write` either way, and leaving
-    // a stale challenge visible after a failed reset is no more
-    // useful than after a successful one. Caller retries by re-
-    // requesting step-up — the unscoped flow is the same.
+    // The `finally` clears the step-up handle on failure too: a leftover
+    // challenge is no more useful after a failed reset than a successful one.
     try {
         httpClient.sendExpectingNoBody(
             request = request,
@@ -137,12 +126,9 @@ suspend fun PreludeAuthClient.changePassword(newPassword: RedactedString) {
         setActiveStepUp(null)
     }
 
-    // Post-success only: drop `prld:pwd:write` locally so a leaked
-    // access token can't change the password again without re-
-    // stepping up. The server already consumed the scope on the
-    // successful reset above; this ensures the SDK's local view
-    // matches. Skipped on failure — the scope wasn't consumed
-    // server-side, so the cache should keep reflecting that.
+    // Post-success only: the server consumed `prld:pwd:write` on a successful
+    // reset, so drop it locally too. On failure the scope is still live
+    // server-side and the cache must keep reflecting that.
     dropConsumedScopeAfterChangePassword()
 }
 
@@ -157,11 +143,8 @@ suspend fun PreludeAuthClient.changePassword(newPassword: RedactedString) {
  * is missing/malformed.
  */
 suspend fun PreludeAuthClient.canChangePassword(): Boolean {
-    // Invalidate first so the refresh mint reflects current
-    // server-side scope, not the possibly-stale cached token. Same
-    // drain-then-replace shape as `dropConsumedScopeAfterChangePassword`
-    // so concurrent refreshes can't land a stale-scope token in the
-    // cache between our invalidate and mint.
+    // Invalidate inside `replace` so the mint reflects current server-side
+    // scope, clobbering any cache write a drained racing refresh left behind.
     val user =
         inflightRefresh.replace {
             invalidateCache()

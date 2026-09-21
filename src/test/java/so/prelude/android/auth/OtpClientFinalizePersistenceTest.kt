@@ -38,11 +38,9 @@ class OtpClientFinalizePersistenceTest {
     @Test
     fun checkOTP_persistsRefreshFromHeader_notFromSetCookie() =
         runBlocking {
-            // The backend mints `__Host-refresh_<appId>` as a cookie for
-            // browser flows. Mobile must use the X-Refresh-Token header —
-            // the cookie jar is in-memory only; RefreshTokenStorage is
-            // SharedPreferences-backed (Android's Keychain analogue) and
-            // survives a cold start.
+            // The backend also emits `__Host-refresh_<appId>` as a cookie for
+            // browser flows; on mobile only the X-Refresh-Token header counts —
+            // the cookie jar is in-memory only, the refresh-token store is not.
             val fixture = Fixture.make()
             fixture.http.installAll(
                 "/v1/session/otp/check" to OtpFixtures.checkOkResponse(),

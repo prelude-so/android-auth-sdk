@@ -120,14 +120,9 @@ class AutoRefreshInterceptorTest {
     @Test
     fun emptyToken_stillSendsRequest_withBearerHeader() =
         runTest {
-            // Documents the contract: an empty token is fine; the server's
-            // 401 will trigger the refresh path.
-            //
-            // We assert that an Authorization header is present and starts
-            // with `Bearer` rather than pinning the exact literal: OkHttp's
-            // header storage trims trailing whitespace, so `Bearer ` and
-            // `Bearer` are indistinguishable on the wire — and the wire
-            // behaviour is what the server actually sees.
+            // An empty token still goes out; the server's 401 drives the refresh.
+            // The exact literal is not pinned because OkHttp trims trailing
+            // whitespace, so `Bearer ` and `Bearer` are the same on the wire.
             var observed: String? = null
             val interceptor =
                 AutoRefreshInterceptor(
@@ -246,15 +241,9 @@ class AutoRefreshInterceptorTest {
     @Test
     fun on401_invalidateThrows_propagates_andClosesResponse() =
         runTest {
-            // A real storage failure during invalidate is surfaceable.
-            // A naive catch here would mask a bad disk and make later
-            // debugging impossible.
-            //
-            // Pin the resource-hygiene contract too: the 401 response
-            // must be closed before the throw propagates, so its
-            // connection slot returns to OkHttp's pool now rather than
-            // waiting for the body's finalizer. Without an explicit
-            // close on this path the connection would leak until GC.
+            // An invalidate failure propagates rather than being swallowed, and
+            // the 401 response is closed before the throw so its connection
+            // returns to OkHttp's pool instead of waiting on the body finalizer.
             val closes = AtomicInteger()
             val interceptor =
                 AutoRefreshInterceptor(
@@ -304,11 +293,8 @@ class AutoRefreshInterceptorTest {
     @Test
     fun on401_overwritesPreExistingAuthorizationHeader() =
         runTest {
-            // Defensive: a caller-supplied placeholder Authorization
-            // header must be replaced, not stacked. OkHttp's
-            // `addHeader()` would append; we use `header()` which
-            // replaces — pin the contract here so a refactor doesn't
-            // silently drift.
+            // A caller-supplied Authorization header must be replaced, not
+            // stacked: `header()` replaces where OkHttp's `addHeader()` appends.
             var seenValues: List<String> = emptyList()
             val interceptor =
                 AutoRefreshInterceptor(

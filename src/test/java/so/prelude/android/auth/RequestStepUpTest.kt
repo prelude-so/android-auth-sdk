@@ -15,11 +15,8 @@ class RequestStepUpTest {
     @Test
     fun requestStepUp_otpStep_returnsChallenge_andDoesNotFireOTPDelivery() =
         runBlocking {
-            // `requestStepUp` returns the challenge handle, and the
-            // caller decides when to fire `POST /otp` via `sendStepUpOTP`.
-            // /otp intentionally NOT
-            // installed — if the SDK regressed to auto-firing, the stub
-            // would fail loudly with "no canned response".
+            // /otp is intentionally NOT installed: the caller drives delivery,
+            // so a regression to auto-firing fails with "no canned response".
             val fixture = Fixture.make()
             fixture.prePopulateStepUp()
             fixture.http.install(

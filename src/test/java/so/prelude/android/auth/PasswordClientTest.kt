@@ -160,11 +160,8 @@ class PasswordClientTest {
     @Test
     fun loginWithPassword_dispatcherReturningNull_omitsDispatchId() =
         runBlocking {
-            // A configured dispatcher returning `null` (a documented
-            // "skip this pass" no-op) must produce the same wire payload
-            // as no dispatcher at all — `dispatch_id` omitted, not sent
-            // as JSON null. Distinct from `_omitsDispatchIdWhenUnconfigured`
-            // because the dispatcher is invoked here.
+            // A dispatcher returning `null` is a documented "skip this pass"
+            // no-op: `dispatch_id` must be omitted, not sent as JSON null.
             var dispatched = 0
             val fixture =
                 Fixture.make(
@@ -401,12 +398,9 @@ class PasswordClientTest {
 
     @Test
     fun loginWithPassword_refreshStoreWriteFails_doesNotPersistAccessToken() {
-        // The refresh-before-access ordering invariant: a write failure
-        // on the refresh-token store must abort *before* the access
-        // token lands in the cache. Otherwise the next 401 would have
-        // a fresh access token paired with a stale (or missing) refresh
-        // token, with nothing to recover. Same invariant as the OTP and
-        // refresh paths.
+        // Ordering invariant: a refresh-token store write failure must abort
+        // before the access token lands in the cache, or the next 401 pairs a
+        // fresh access token with no usable refresh token.
         val failingStorage =
             FailingRefreshTokenStorage(InMemoryRefreshTokenStorage()).apply {
                 writeFailure = RuntimeException("simulated disk failure")
@@ -433,13 +427,9 @@ class PasswordClientTest {
     @Test
     fun loginWithPassword_firstHopIsUnauthenticated_finalizeIsDPoPSigned() =
         runBlocking {
-            // `/login/email/password` is the chicken-and-egg endpoint: the
-            // device has no keypair bound to a session yet, so it must run
-            // unauthenticated (no DPoP, no bearer). `/login/finalize` then
-            // mints the access + refresh token DPoP-bound to this device's
-            // keypair. The auto-refresh interceptor isn't on either chain
-            // — there's no bearer to refresh until /login/finalize returns
-            // one.
+            // `/login/email/password` must run unauthenticated: the device has
+            // no keypair bound to a session yet. `/login/finalize` is DPoP-signed,
+            // binding the tokens it mints to this device's keypair.
             val fixture = Fixture.make()
             fixture.http.installAll(
                 "/v1/session/login/email/password" to loginOkResponse(),
@@ -472,13 +462,9 @@ class PasswordClientTest {
     @Test
     fun loginWithPassword_finalizeAccessExpiry_isClockSkewAdjusted() =
         runBlocking {
-            // Drift the server's `Date` 60s behind the fixture's local
-            // clock. The HttpClient's `timeDiffSec` should pick up
-            // local - server = +60s, and `storeAccessToken` should add it
-            // to the server-supplied `expires_at` so the cache compares
-            // correctly against the local clock. Same reasoning as the OTP path's
-            // skew test so a regression in `finalizeLogin` shows up on
-            // both surfaces.
+            // Server `Date` 60s behind the fixture clock: `timeDiffSec` picks up
+            // local - server = +60s and `storeAccessToken` adds it to the
+            // server-supplied `expires_at` so the cache uses the local clock.
             val fixture = Fixture.make()
             fixture.http.installAll(
                 "/v1/session/login/email/password" to loginOkResponse(),
@@ -509,11 +495,8 @@ class PasswordClientTest {
 
     @Test
     fun loginWithPasswordOptions_toString_redactsThePassword() {
-        // Belt-and-braces: a stray `Log.d` / coroutine error path must
-        // not leak the plaintext via the options' `toString`. The
-        // `RedactedString` wrapper renders `<redacted>`, and the
-        // `LoginWithPasswordOptions` `toString` matches that. Caller
-        // can still get the value back through `password.value`.
+        // A stray log or error path must not leak the plaintext through the
+        // options' `toString`; the `RedactedString` wrapper renders `<redacted>`.
         val opts =
             LoginWithPasswordOptions(
                 identifier = email,
@@ -535,11 +518,8 @@ class PasswordClientTest {
 
     @Test
     fun loginWithPasswordRequestBody_toString_redactsThePassword() {
-        // The wire DTO carries the plaintext (the server has to verify
-        // it) but its `toString` must not leak — a stray `Log.d` of
-        // the request struct or a coroutine error path that dumps it
-        // would otherwise surface the plaintext in any logging
-        // pipeline tailing the SDK.
+        // The wire DTO carries the plaintext (the server has to verify it), so
+        // its `toString` must redact it or any log of the struct leaks it.
         val body =
             LoginWithPasswordRequestBody(
                 identifier = email,
