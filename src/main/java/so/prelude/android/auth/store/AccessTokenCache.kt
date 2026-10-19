@@ -107,6 +107,12 @@ internal class AccessTokenCache(
             memory[domain] = invalidated
         }
 
+    /** Drop the in-memory entry, leaving persistent storage intact. */
+    fun evict(domain: String) =
+        lock.withLock {
+            memory.remove(domain)
+        }
+
     /**
      * Remove the entry from both memory and persistent storage.
      *

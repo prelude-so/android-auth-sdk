@@ -157,6 +157,10 @@ class PreludeAuthClient internal constructor(
      */
     internal val sessionEpoch: AtomicLong = AtomicLong(0)
 
+    /** No token and no protected calls until [unseal]. */
+    @Volatile
+    internal var sealed = false
+
     // Tracks the most-recently-issued step-up handle so callers can
     // observe in-progress flows without holding a reference. Cleared
     // on completion, on `changePassword` success, and on `logout` so
@@ -234,7 +238,10 @@ class PreludeAuthClient internal constructor(
     internal val autoRefreshInterceptor: AutoRefreshInterceptor
         get() =
             AutoRefreshInterceptor(
-                getAccessToken = { getAccessToken().orEmpty() },
+                getAccessToken = {
+                    requireUnsealed()
+                    getAccessToken().orEmpty()
+                },
                 invalidateCache = { invalidateCache() },
                 refreshSession = { refresh().accessToken },
             )
@@ -276,6 +283,7 @@ class PreludeAuthClient internal constructor(
      * surface the post-refresh entry when one is mid-flight.
      */
     private suspend fun readCacheCoherent(): AccessTokenEntry? {
+        if (sealed) return null
         inflightRefresh.joinIfRunning()
         return accessTokenCache.getWithoutExpirationCheck(domain)
     }
@@ -308,6 +316,7 @@ class PreludeAuthClient internal constructor(
      * twice.
      */
     suspend fun refresh(): PreludeUser {
+        requireUnsealed()
         // Fast path: a still-valid cached token short-circuits the
         // dedup machinery and the network round-trip entirely.
         accessTokenCache.get(domain)?.let { return makeUserForRefresh(it.accessToken) }
@@ -331,6 +340,7 @@ class PreludeAuthClient internal constructor(
      *   `null` and ship an empty body.
      */
     internal suspend fun doRefresh(stepUpToken: String? = null): PreludeUser {
+        requireUnsealed()
         // Capture the epoch at entry; it is re-checked before persisting
         // rotated tokens, so a [logout] that bumps it mid-flight invalidates
         // what we were about to write.

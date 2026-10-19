@@ -80,6 +80,11 @@ sealed class PreludeAuthError(
         message: String,
     ) : PreludeAuthError("RefreshFailed: $message")
 
+    /** The session is sealed by the idle lock. */
+    class SessionLocked(
+        message: String,
+    ) : PreludeAuthError("SessionLocked: $message")
+
     /**
      * Request timed out before the server responded.
      *
@@ -226,6 +231,21 @@ sealed class PreludeAuthError(
     class PasskeyNotSupported(
         message: String,
     ) : PreludeAuthError("PasskeyNotSupported: $message")
+
+    /** The lock could not be armed or the unlock was not confirmed. */
+    class LockUnavailable(
+        message: String,
+    ) : PreludeAuthError("LockUnavailable: $message")
+
+    /** Wrong app-lock passcode; the message says how many attempts remain. */
+    class InvalidPasscode(
+        message: String,
+    ) : PreludeAuthError("InvalidPasscode: $message")
+
+    /** App-lock attempts are spent; sign the user out. */
+    class LockedOut(
+        message: String,
+    ) : PreludeAuthError("LockedOut: $message")
 
     /** Error code not recognised by the SDK. */
     class Generic(

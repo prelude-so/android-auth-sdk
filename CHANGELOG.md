@@ -4,6 +4,40 @@ Notable changes to the Prelude Android Auth SDK (`so.prelude.android:auth-sdk`).
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-10-16
+
+### Added
+- Idle lock. `PreludeIdleLock` locks the app after `thresholdMs` in
+  the background, and the user unlocks it offline with an app
+  passcode or, optionally, a strong biometric through
+  `BiometricPrompt`. Locking seals the client, so the session stays
+  unusable until unlock. `isLocked` (a `StateFlow`) drives the lock
+  screen; `setPasscode(passcode)`, `enableBiometrics()` /
+  `disableBiometrics()`, `unlock(passcode)`,
+  `unlockWithBiometrics(activity)`, `lock()` and `disable()` manage
+  it. Wrong passcodes are capped at `maxAttempts` (default 5). By
+  default the lock also engages on launch, so relaunching does not
+  skip it. Requires a client built with a `Context`. Biometrics is
+  opt-in: `androidx.biometric:biometric` is `compileOnly`, so add it
+  to use biometrics. Without it, `isBiometricsAvailable` is `false`.
+- `PreludeAuthClient.seal()`, `unseal()` and `isSealed`. A sealed
+  client hides the profile and access token, and every protected call
+  and refresh throws `SessionLocked`. `unseal()` restores the token
+  from storage without a network call. Apps that never call `seal()`
+  see no change.
+- `PreludeAuthError.SessionLocked`, `LockUnavailable`,
+  `InvalidPasscode`, and `LockedOut`. Sign the user out on
+  `LockedOut`.
+
+### Changed
+- New runtime dependency on `androidx.lifecycle:lifecycle-process`,
+  used by the idle lock.
+
+### Fixed
+- Apps that minify with R8 no longer fail to build with missing class
+  errors when they leave out `androidx.browser`, `androidx.credentials`
+  or `androidx.biometric`. The SDK now ships consumer ProGuard rules.
+
 ## [0.7.1] - 2026-09-18
 
 ### Changed
