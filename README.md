@@ -7,10 +7,10 @@ It is provided as a regular Maven artifact that you can use as a normal dependen
 
 ```
 (Kts)
-implementation("so.prelude.android:auth-sdk:0.7.1")
+implementation("so.prelude.android:auth-sdk:0.9.0")
 
 (Groovy)
-implementation 'so.prelude.android:auth-sdk:0.7.1'
+implementation 'so.prelude.android:auth-sdk:0.9.0'
 ```
 
 ### Requirements
@@ -167,6 +167,32 @@ client.revokeSessions(PreludeRevokeTarget.All)                 // including this
 ```
 
 Revoking the current session (`All`, `Mine`, or its specific id) also wipes the local credentials, mirroring `logout()`.
+
+#### Anti-fraud signals
+
+The client sends anti-fraud signals with unauthenticated logins when
+it finds a Prelude SDK key. Add the key to `AndroidManifest.xml`,
+inside `<application>`:
+
+```xml
+<meta-data
+    android:name="so.prelude.sdk_key"
+    android:value="sdk_XXXXXXXXXXXXXXXX" />
+```
+
+With no key, no signals are sent and login works as before. To pass
+the key in code instead, give the client a `PreludeSignalsAdapter`;
+a key passed in code wins over the manifest:
+
+```kotlin
+import so.prelude.android.auth.signals.PreludeSignalsAdapter
+
+val client = PreludeAuthClient(
+    context = applicationContext,
+    baseUrl = URL("https://<your-app>.session.prelude.dev"),
+    signalsDispatcher = PreludeSignalsAdapter(applicationContext, sdkKey = fetchedKey),
+)
+```
 
 #### Endpoint configuration
 

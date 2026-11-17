@@ -246,6 +246,7 @@ internal fun PreludeAuthClient.clearAllStores() {
     // the wipe: a stale challenge that survives logout would let a
     // post-logout observer believe a flow is still in progress.
     setActiveStepUp(null)
+    sealed = false
 
     firstError?.let { throw it }
 }

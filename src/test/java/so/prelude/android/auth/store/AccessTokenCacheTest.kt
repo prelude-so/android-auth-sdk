@@ -122,6 +122,19 @@ class AccessTokenCacheTest {
     }
 
     @Test
+    fun invalidateIfMatching_skipsARefreshedToken() {
+        val cache = AccessTokenCache(clock = clock, storage = InMemoryAccessTokenStorage())
+        val refreshed = makeEntry(expiresIn = 300)
+        cache.set(domain, refreshed)
+
+        cache.invalidateIfMatching(domain, "the-token-it-replaced")
+        assertEquals(refreshed, cache.get(domain))
+
+        cache.invalidateIfMatching(domain, refreshed.accessToken)
+        assertNull(cache.get(domain))
+    }
+
+    @Test
     fun invalidate_isNoOpForUncachedDomain() {
         val storage = InMemoryAccessTokenStorage()
         val cache = AccessTokenCache(clock = clock, storage = storage)

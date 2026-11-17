@@ -35,8 +35,8 @@ import so.prelude.android.auth.passkey.PasskeyCeremony
  * `true` when the authenticator re-offered an existing credential.
  * Requires the session to hold `prld:passkey:write` (granted via
  * step-up); the scope is consumed server-side and the session is
- * refreshed before returning so the next access token reflects the
- * new `has_passkey` claim.
+ * refreshed (best-effort) before returning so the next access token
+ * reflects the new `has_passkey` claim.
  *
  * Throws [PreludeAuthError.InvalidConfiguration] for an empty
  * username, [PreludeAuthError.PasskeyRegistrationFailed] when the
@@ -109,7 +109,7 @@ internal suspend fun PreludeAuthClient.registerPasskey(
 
     // A new passkey can flip the has_passkey claim; refresh so the
     // next access token reflects it.
-    refreshAfterPasskeyMutation()
+    refreshAfterClaimChange()
 
     return PreludePasskeyRegistration(
         credential = credential.toPublic(),

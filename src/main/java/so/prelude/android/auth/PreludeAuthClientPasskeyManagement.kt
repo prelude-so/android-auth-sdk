@@ -59,8 +59,8 @@ suspend fun PreludeAuthClient.renamePasskey(
 }
 
 /**
- * Delete a passkey. Refreshes the session afterwards since removing
- * the last credential can flip the `has_passkey` claim.
+ * Delete a passkey. Refreshes the session afterwards (best-effort)
+ * since removing the last credential can flip the `has_passkey` claim.
  *
  * Throws [PreludeAuthError.InvalidConfiguration] for an empty
  * [credentialId].
@@ -76,14 +76,5 @@ suspend fun PreludeAuthClient.deletePasskey(credentialId: String) {
         interceptors = listOf(autoRefreshInterceptor, dpopInterceptor),
     )
 
-    refreshAfterPasskeyMutation()
-}
-
-/**
- * Force the next access token to reflect a changed `has_passkey`
- * claim: invalidate the cached token, then mint a fresh one.
- */
-internal suspend fun PreludeAuthClient.refreshAfterPasskeyMutation() {
-    invalidateCache()
-    refresh()
+    refreshAfterClaimChange()
 }

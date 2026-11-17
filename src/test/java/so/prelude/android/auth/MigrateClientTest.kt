@@ -32,6 +32,7 @@ class MigrateClientTest {
 
     private val migrationPath = "/v1/session/migration"
     private val finalizePath = "/v1/session/login/finalize"
+    private val refreshPath = "/v1/session/refresh"
 
     private fun migrationOkResponse(challenge: String = "challenge-abc") =
         StubHttpSession.Canned.json("""{"challenge_token":"$challenge"}""")
@@ -114,7 +115,7 @@ class MigrateClientTest {
 
             fixture.client.migrate(MigrateOptions(token = "legacy-bearer"))
             // Wipe the session so the second migrate round-trips.
-            fixture.accessTokenCache.clear(fixture.domain)
+            fixture.client.clearAllStores()
             fixture.client.migrate(MigrateOptions(token = "legacy-bearer"))
 
             val challenges =
@@ -180,6 +181,57 @@ class MigrateClientTest {
 
             assertEquals(1, fixture.http.requestCount(migrationPath))
         }
+
+    // MARK: - Existing session
+
+    @Test
+    fun migrate_expiredToken_withSession_refreshes_withoutSpendingTheLegacyToken() =
+        runBlocking {
+            val fixture = Fixture.make()
+            fixture.prePopulateStepUp()
+            fixture.client.invalidateCache()
+            fixture.http.install(refreshPath, StepUpFixtures.refreshOk())
+
+            val user = fixture.client.migrate(MigrateOptions(token = "legacy-bearer"))
+
+            assertEquals(StepUpFixtures.SCOPED_ACCESS_TOKEN, user.accessToken)
+            assertEquals(1, fixture.http.requestCount(refreshPath))
+            assertEquals(0, fixture.http.requestCount(migrationPath))
+        }
+
+    @Test
+    fun migrate_sessionGoneOnServer_migratesAgain() =
+        runBlocking {
+            val fixture = Fixture.make()
+            fixture.prePopulateStepUp()
+            fixture.client.invalidateCache()
+            fixture.http.installAll(
+                refreshPath to
+                    StubHttpSession.Canned.json(
+                        """{"code":"unauthorized","message":"refresh token revoked"}""",
+                        statusCode = 401,
+                    ),
+                migrationPath to migrationOkResponse(),
+                finalizePath to OtpFixtures.finalizeOkResponse(),
+            )
+
+            val user = fixture.client.migrate(MigrateOptions(token = "legacy-bearer"))
+
+            assertEquals(jwt, user.accessToken)
+            assertEquals(1, fixture.http.requestCount(migrationPath))
+        }
+
+    @Test
+    fun migrate_sealedSession_throwsSessionLocked_withoutSpendingTheLegacyToken() {
+        val fixture = Fixture.make()
+        fixture.prePopulateStepUp()
+        runBlocking { fixture.client.seal() }
+
+        assertThrows(PreludeAuthError.SessionLocked::class.java) {
+            runBlocking { fixture.client.migrate(MigrateOptions(token = "legacy-bearer")) }
+        }
+        assertEquals(0, fixture.http.requestCount(migrationPath))
+    }
 
     // MARK: - Error mapping
 

@@ -148,13 +148,13 @@ class AutoRefreshInterceptorTest {
     @Test
     fun on401_invalidatesCache_refreshes_retriesWithNewToken() =
         runTest {
-            val invalidateCalls = AtomicInteger()
+            val invalidated = mutableListOf<String>()
             val refreshCalls = AtomicInteger()
             val seenAuth = mutableListOf<String?>()
             val interceptor =
                 AutoRefreshInterceptor(
                     getAccessToken = { "stale" },
-                    invalidateCache = { invalidateCalls.incrementAndGet() },
+                    invalidateCache = { sentToken -> invalidated += sentToken },
                     refreshSession = {
                         refreshCalls.incrementAndGet()
                         "fresh"
@@ -170,7 +170,7 @@ class AutoRefreshInterceptorTest {
                 }
 
             assertEquals(2, calls)
-            assertEquals(1, invalidateCalls.get())
+            assertEquals("only the token the request sent", listOf("stale"), invalidated)
             assertEquals(1, refreshCalls.get())
             assertEquals(listOf("Bearer stale", "Bearer fresh"), seenAuth)
             assertEquals(200, response.code)

@@ -1,6 +1,8 @@
 package so.prelude.android.auth
 
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.jsonPrimitive
@@ -8,6 +10,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Test
 import so.prelude.android.auth.http.HttpHeader
+import so.prelude.android.auth.store.AccessTokenEntry
 
 /**
  * `requestStepUp` request shape (scope, dispatch_id) and the
@@ -155,10 +158,16 @@ class RequestStepUpAuthTest {
             // can complete its retry before the second's intercept even
             // sees its 401, and the dedup window never opens.
             fixture.http.installGate("/v1/session/refresh")
+            // Hold both first hits at the stub: otherwise the second caller
+            // can send after the swap below and get the success response,
+            // with no 401 and no retry.
+            fixture.http.installGate("/v1/session/stepup/request")
 
             coroutineScope {
                 val a = async { fixture.client.requestStepUp("prld:pwd:write") }
                 val b = async { fixture.client.requestStepUp("prld:pwd:write") }
+                StepUpFixtures.waitUntil { fixture.http.requestCount("/v1/session/stepup/request") >= 2 }
+                fixture.http.releaseGate("/v1/session/stepup/request")
                 // Wait for the first refresh to be in flight at the gate;
                 // the second racer attaches to the same Inflight slot.
                 StepUpFixtures.waitUntil { fixture.http.requestCount("/v1/session/refresh") >= 1 }
@@ -185,5 +194,93 @@ class RequestStepUpAuthTest {
                 listOf("Bearer $rotatedAccessToken", "Bearer $rotatedAccessToken"),
                 retryAuths,
             )
+        }
+
+    @Test
+    fun protected401_afterSiblingRefresh_keepsNewToken_noRefresh() =
+        runBlocking {
+            // A sibling stores a new token while our request (sent with the
+            // old one) is in flight. The 401 must not expire the new token,
+            // and the retry reuses it without another /refresh.
+            val siblingEntry =
+                AccessTokenEntry(
+                    accessToken = StepUpFixtures.ROTATED_ACCESS_TOKEN,
+                    expiresAt = StepUpFixtures.BASE_EPOCH + 3_600,
+                )
+            val fixture = Fixture.make()
+            fixture.prePopulateStepUp()
+            fixture.http.install(
+                "/v1/session/stepup/request",
+                StepUpFixtures.apiError("unauthorized", status = 401),
+            )
+            fixture.http.installGate("/v1/session/stepup/request")
+
+            coroutineScope {
+                val request = async { fixture.client.requestStepUp("prld:pwd:write") }
+                StepUpFixtures.waitUntil { fixture.http.requestCount("/v1/session/stepup/request") >= 1 }
+                fixture.accessTokenCache.set(fixture.domain, siblingEntry)
+                // The gated call already holds its 401; this is for the retry.
+                fixture.http.install(
+                    "/v1/session/stepup/request",
+                    StepUpFixtures.stepUpResponse("continue", StepUpFixtures.verifyEmailToken),
+                )
+                fixture.http.releaseGate("/v1/session/stepup/request")
+                request.await()
+            }
+
+            assertEquals(0, fixture.http.requestCount("/v1/session/refresh"))
+            val stepupReqs = fixture.http.requestsFor("/v1/session/stepup/request")
+            assertEquals(2, stepupReqs.size)
+            assertEquals(
+                "Bearer ${StepUpFixtures.SCOPED_ACCESS_TOKEN}",
+                stepupReqs[0].header(HttpHeader.AUTHORIZATION),
+            )
+            assertEquals(
+                "Bearer ${siblingEntry.accessToken}",
+                stepupReqs[1].header(HttpHeader.AUTHORIZATION),
+            )
+            assertEquals(
+                "the 401 for the old token must not expire the sibling's token",
+                siblingEntry,
+                fixture.accessTokenCache.get(fixture.domain),
+            )
+        }
+
+    @Test
+    fun concurrent401s_onSeveralThreads_costOneRefresh() =
+        runBlocking {
+            // Every caller holds a 401 for the same token, on real threads. A
+            // caller that handles its 401 after a sibling's refresh has
+            // completed must not expire the new token and refresh again.
+            val rotatedRefreshOk = StepUpFixtures.refreshOk(accessToken = StepUpFixtures.ROTATED_ACCESS_TOKEN)
+            val callers = 8
+
+            repeat(100) { round ->
+                val fixture = Fixture.make(domain = "race-$round.example")
+                fixture.prePopulateStepUp()
+                fixture.http.installAll(
+                    "/v1/session/stepup/request" to StepUpFixtures.apiError("unauthorized", status = 401),
+                    "/v1/session/refresh" to rotatedRefreshOk,
+                )
+                fixture.http.installGate("/v1/session/stepup/request")
+
+                coroutineScope {
+                    // The retries get the canned 401 again, so each call fails;
+                    // only the number of refreshes matters here.
+                    val racers =
+                        (1..callers).map {
+                            async(Dispatchers.Default) {
+                                runCatching { fixture.client.requestStepUp("prld:pwd:write") }
+                            }
+                        }
+                    StepUpFixtures.waitUntil {
+                        fixture.http.requestCount("/v1/session/stepup/request") >= callers
+                    }
+                    fixture.http.releaseGate("/v1/session/stepup/request")
+                    racers.awaitAll()
+                }
+
+                assertEquals("round $round", 1, fixture.http.requestCount("/v1/session/refresh"))
+            }
         }
 }
