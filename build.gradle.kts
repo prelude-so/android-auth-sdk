@@ -10,6 +10,7 @@ android {
 
     defaultConfig {
         minSdk = 26
+        consumerProguardFiles("consumer-rules.pro")
     }
 
     buildTypes {
@@ -46,6 +47,12 @@ dependencies {
     // no extra dependency; passkey integrators add it themselves
     // (plus credentials-play-services-auth on API < 34).
     compileOnly(libs.androidx.credentials)
+    // Idle lock biometrics (opt-in) use BiometricPrompt. Compile-only so
+    // apps that skip biometrics pull no extra dependency.
+    compileOnly(libs.androidx.biometric)
+    // The idle lock watches the process lifecycle, so it needs this at
+    // runtime even without biometrics.
+    implementation(libs.androidx.lifecycle.process)
     // Anti-fraud signals dispatch is provided by the Prelude Android
     // SDK. Depend on the published coordinate, never a project
     // reference: the Maven POM is generated from this declaration, so

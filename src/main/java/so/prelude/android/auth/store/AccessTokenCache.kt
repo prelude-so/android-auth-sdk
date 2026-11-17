@@ -108,6 +108,24 @@ internal class AccessTokenCache(
         }
 
     /**
+     * [invalidate] only while the cached access token is still
+     * [expected]: a token a concurrent caller just refreshed must not
+     * be expired by a 401 for the token it replaced.
+     */
+    fun invalidateIfMatching(
+        domain: String,
+        expected: String,
+    ) = lock.withLock {
+        if (memory[domain]?.accessToken == expected) invalidate(domain)
+    }
+
+    /** Drop the in-memory entry, leaving persistent storage intact. */
+    fun evict(domain: String) =
+        lock.withLock {
+            memory.remove(domain)
+        }
+
+    /**
      * Remove the entry from both memory and persistent storage.
      *
      * Storage before memory: if the delete fails the entry stays

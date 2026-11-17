@@ -129,7 +129,7 @@ suspend fun PreludeAuthClient.changePassword(newPassword: RedactedString) {
     // Post-success only: the server consumed `prld:pwd:write` on a successful
     // reset, so drop it locally too. On failure the scope is still live
     // server-side and the cache must keep reflecting that.
-    dropConsumedScopeAfterChangePassword()
+    refreshAfterClaimChange()
 }
 
 /**
@@ -159,38 +159,17 @@ suspend fun PreludeAuthClient.canChangePassword(): Boolean {
 }
 
 /**
- * Drain any in-flight refresh, then install a cache-invalidating
- * refresh in [PreludeAuthClient.inflightRefresh] so the next mint
- * drops the just-consumed `prld:pwd:write` scope.
+ * Mint a fresh access token after a server change that alters its
+ * claims (a consumed scope, `has_passkey`).
  *
- * The drain is load-bearing for the security claim of this surface:
- * a vanilla [refresh] racing in the slot may have been processed
- * server-side *before* the password reset consumed the scope and
- * would return a still-scoped access token. Joining that result via
- * [Inflight.runOrJoin] would land the scoped token in the cache —
- * exactly the replay-leak the bookkeeping is supposed to prevent.
- * Uses the [Inflight.replace] shape `refreshAfterStepUp` already
- * uses for the symmetric "must drop a wrongly-scoped token" race.
+ * Drains any in-flight refresh first: it may have been served before
+ * the change, and joining it would cache the stale token. The
+ * invalidation runs inside the installed task for the same reason.
  *
- * The cache invalidation runs *inside* the installed task so any
- * post-drain cache write the vanilla refresh left behind is clobbered
- * before we mint. Same ordering rationale as `refreshAfterStepUp`.
- *
- * Failures here are non-fatal: the password change itself already
- * succeeded and the API contract has been honoured. The next
- * protected call's [AutoRefreshInterceptor] will drive the same
- * refresh on a 401, so a transient hiccup self-heals on the next
- * authenticated request. Cancellation propagates verbatim so
- * structured concurrency stays correct — same cancellation
- * handling as [PreludeAuthClient.dispatchSignalsIfConfigured].
- *
- * Catches [Exception] (not [Throwable]) so JVM [Error] subclasses
- * (`OutOfMemoryError`, `LinkageError`, ...) keep their default
- * propagation. Private to this file: the precise sequencing
- * (drain → invalidate → mint, all inside one `replace`) is a
- * contract of this surface, not a general-purpose helper.
+ * Best-effort: the change already landed, and the next 401 drives
+ * the same refresh. Cancellation still propagates.
  */
-private suspend fun PreludeAuthClient.dropConsumedScopeAfterChangePassword() {
+internal suspend fun PreludeAuthClient.refreshAfterClaimChange() {
     try {
         inflightRefresh.replace {
             invalidateCache()
@@ -199,9 +178,6 @@ private suspend fun PreludeAuthClient.dropConsumedScopeAfterChangePassword() {
     } catch (e: CancellationException) {
         throw e
     } catch (_: Exception) {
-        // Storage hiccup or refresh-side failure — non-fatal. The
-        // password change already succeeded; the auto-refresh
-        // interceptor will drive the same drop on the next
-        // protected call.
+        // Non-fatal, see above.
     }
 }

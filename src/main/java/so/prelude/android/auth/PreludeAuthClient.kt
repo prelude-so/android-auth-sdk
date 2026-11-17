@@ -26,6 +26,7 @@ import so.prelude.android.auth.http.NowProvider
 import so.prelude.android.auth.http.RefreshTokenResponse
 import so.prelude.android.auth.http.StepUpRefreshRequestBody
 import so.prelude.android.auth.http.WIRE_JSON
+import so.prelude.android.auth.signals.PreludeSignalsAdapter
 import so.prelude.android.auth.signals.PreludeSignalsDispatcher
 import so.prelude.android.auth.store.AccessTokenCache
 import so.prelude.android.auth.store.AccessTokenEntry
@@ -66,6 +67,10 @@ private val EMPTY_JSON_BODY =
  *   Required when [baseUrl] points at `localhost` but the server's
  *   AppID middleware expects a canonical domain.
  * @param timeout per-request network timeout.
+ * @param signalsDispatcher anti-fraud signals dispatcher. When `null`,
+ *   the client uses a [PreludeSignalsAdapter] with the SDK key of the
+ *   application manifest, which does nothing when the manifest has
+ *   no key.
  */
 class PreludeAuthClient internal constructor(
     applicationContext: Context?,
@@ -80,11 +85,10 @@ class PreludeAuthClient internal constructor(
     internal val signalsDispatcher: PreludeSignalsDispatcher? = null,
 ) {
     /**
-     * Application context retained for SDK surfaces that need one
-     * (e.g. a future `PreludeSignalsAdapter` bridge to the Prelude
-     * Android SDK). Nullable so unit tests can construct the client
-     * without a real Android runtime — production callers always
-     * supply one via the public constructor.
+     * Application context retained for SDK surfaces that need one.
+     * Nullable so unit tests can construct the client without a real
+     * Android runtime — production callers always supply one via the
+     * public constructor.
      */
     internal val applicationContext: Context? = applicationContext
 
@@ -157,6 +161,10 @@ class PreludeAuthClient internal constructor(
      */
     internal val sessionEpoch: AtomicLong = AtomicLong(0)
 
+    /** No token and no protected calls until [unseal]. */
+    @Volatile
+    internal var sealed = false
+
     // Tracks the most-recently-issued step-up handle so callers can
     // observe in-progress flows without holding a reference. Cleared
     // on completion, on `changePassword` success, and on `logout` so
@@ -212,7 +220,7 @@ class PreludeAuthClient internal constructor(
         refreshTokenStore = newDefaultRefreshStore(context, baseUrl, hostOverride),
         accessTokenCache = newDefaultAccessCache(context, baseUrl, hostOverride),
         clock = { Instant.now() },
-        signalsDispatcher = signalsDispatcher,
+        signalsDispatcher = signalsDispatcher ?: PreludeSignalsAdapter(context),
     )
 
     /**
@@ -234,8 +242,11 @@ class PreludeAuthClient internal constructor(
     internal val autoRefreshInterceptor: AutoRefreshInterceptor
         get() =
             AutoRefreshInterceptor(
-                getAccessToken = { getAccessToken().orEmpty() },
-                invalidateCache = { invalidateCache() },
+                getAccessToken = {
+                    requireUnsealed()
+                    getAccessToken().orEmpty()
+                },
+                invalidateCache = { sentToken -> invalidateRejectedAccessToken(sentToken) },
                 refreshSession = { refresh().accessToken },
             )
 
@@ -276,6 +287,7 @@ class PreludeAuthClient internal constructor(
      * surface the post-refresh entry when one is mid-flight.
      */
     private suspend fun readCacheCoherent(): AccessTokenEntry? {
+        if (sealed) return null
         inflightRefresh.joinIfRunning()
         return accessTokenCache.getWithoutExpirationCheck(domain)
     }
@@ -283,16 +295,26 @@ class PreludeAuthClient internal constructor(
     /**
      * Mark the cached access token as expired without removing it.
      * Side-effects are local-only: no network call; the refresh token
-     * on the server is untouched. Called by [AutoRefreshInterceptor]
-     * on a 401 and by callers who want to force the next [refresh] to
-     * hit the network. The entry stays retrievable via [getProfile] /
-     * [getAccessToken] so the client can render profile data while a
-     * refresh runs.
+     * on the server is untouched. For callers who want to force the
+     * next [refresh] to hit the network. The entry stays retrievable
+     * via [getProfile] / [getAccessToken] so the client can render
+     * profile data while a refresh runs.
      */
     suspend fun invalidateCache() {
         // SharedPreferences writes are blocking; route through IO so a
         // main-thread caller doesn't ANR.
         withContext(Dispatchers.IO) { accessTokenCache.invalidate(domain) }
+    }
+
+    /**
+     * 401 path: expire [sentToken] only if it is still the cached
+     * token. Throws [PreludeAuthError.SessionLocked] on a sealed
+     * client, also when no token was sent.
+     */
+    private suspend fun invalidateRejectedAccessToken(sentToken: String) {
+        requireUnsealed()
+        if (sentToken.isEmpty()) return
+        withContext(Dispatchers.IO) { accessTokenCache.invalidateIfMatching(domain, sentToken) }
     }
 
     // MARK: - Refresh
@@ -308,6 +330,7 @@ class PreludeAuthClient internal constructor(
      * twice.
      */
     suspend fun refresh(): PreludeUser {
+        requireUnsealed()
         // Fast path: a still-valid cached token short-circuits the
         // dedup machinery and the network round-trip entirely.
         accessTokenCache.get(domain)?.let { return makeUserForRefresh(it.accessToken) }
@@ -331,6 +354,7 @@ class PreludeAuthClient internal constructor(
      *   `null` and ship an empty body.
      */
     internal suspend fun doRefresh(stepUpToken: String? = null): PreludeUser {
+        requireUnsealed()
         // Capture the epoch at entry; it is re-checked before persisting
         // rotated tokens, so a [logout] that bumps it mid-flight invalidates
         // what we were about to write.
@@ -483,7 +507,7 @@ class PreludeAuthClient internal constructor(
         } catch (e: Exception) {
             // Catches Exception (not Throwable) so JVM Error subclasses
             // (OutOfMemoryError, LinkageError, ...) keep their default
-            // propagation. Same rationale as dropConsumedScopeAfterChangePassword.
+            // propagation.
             Log.e("PreludeAuth", "failed to dispatch signals", e)
             null
         }

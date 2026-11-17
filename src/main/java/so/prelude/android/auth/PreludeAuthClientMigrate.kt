@@ -1,5 +1,7 @@
 package so.prelude.android.auth
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import okhttp3.RequestBody.Companion.toRequestBody
 import so.prelude.android.auth.crypto.Pkce
@@ -25,10 +27,11 @@ import so.prelude.android.auth.http.WIRE_JSON
  *      together with the PKCE `code_verifier`, binding the issued
  *      access and refresh tokens to this device's key.
  *
- * Safe to call on every launch: a valid cached session returns
- * immediately without spending the legacy token, and concurrent
- * callers share a single in-flight exchange. The exchange is not
- * abandoned when an awaiting caller is cancelled.
+ * Safe to call on every launch: an existing session is returned
+ * (refreshed when its access token expired) without spending the
+ * legacy token, and concurrent callers share a single in-flight
+ * exchange. A sealed session throws [PreludeAuthError.SessionLocked].
+ * The exchange is not abandoned when an awaiting caller is cancelled.
  *
  * When the client was constructed with a
  * [so.prelude.android.auth.signals.PreludeSignalsDispatcher], a
@@ -46,9 +49,24 @@ import so.prelude.android.auth.http.WIRE_JSON
  * [PreludeAuthError.Network] or [PreludeAuthError.Timeout].
  */
 suspend fun PreludeAuthClient.migrate(options: MigrateOptions): PreludeUser {
+    requireUnsealed()
     // Already migrated: return the cached session without spending
     // the legacy token again.
     accessTokenCache.get(domain)?.let { return makeUserForMigrate(it.accessToken) }
+
+    // A session exists but its access token expired: refresh it
+    // instead of spending the legacy token again.
+    val hasSession = withContext(Dispatchers.IO) { !refreshTokenStore.get(domain)?.refreshToken.isNullOrEmpty() }
+    if (hasSession) {
+        val startEpoch = sessionEpoch.get()
+        try {
+            return refresh()
+        } catch (e: PreludeAuthError.Unauthorized) {
+            // A logout during the refresh wins. Otherwise the session
+            // is gone on the server: migrate again.
+            if (sessionEpoch.get() != startEpoch) throw e
+        }
+    }
 
     return inflightMigrate.runOrJoin(
         // Re-checked under the slot's lock: a caller that just

@@ -6,8 +6,9 @@ import okhttp3.Response
 
 /**
  * Attaches `Authorization: Bearer <access token>` to every request
- * and transparently recovers from 401 responses: invalidate the
- * cached token, refresh, and retry once.
+ * and transparently recovers from 401 responses: expire the
+ * rejected token (only if it is still cached), refresh when needed,
+ * and retry once.
  *
  * Compose first in the chain (outermost) so the bearer is attached
  * before DPoP signs the request and harvests its nonce — DPoP must
@@ -32,18 +33,19 @@ import okhttp3.Response
  *   empty string when none is cached — the resulting
  *   `Authorization: Bearer ` correctly elicits a 401 and triggers
  *   the refresh path below.
- * @param invalidateCache marks the cached token stale after a 401
- *   so other code paths stop handing out the bad token. Allowed
- *   to throw — a real storage failure here is more important than
- *   a stale 401.
- * @param refreshSession performs the refresh round-trip and
- *   returns the new access token. May throw on any refresh-side
- *   failure; the interceptor swallows it and returns the original
- *   401 to the caller.
+ * @param invalidateCache marks the token the request sent stale
+ *   after a 401, if it is still the cached one, so other code paths
+ *   stop handing out the bad token. Allowed to throw — a real
+ *   storage failure or a sealed client is more important than a
+ *   stale 401.
+ * @param refreshSession returns a valid access token, refreshing
+ *   when needed. May throw on any refresh-side failure; the
+ *   interceptor swallows it and returns the original 401 to the
+ *   caller.
  */
 internal class AutoRefreshInterceptor(
     private val getAccessToken: suspend () -> String,
-    private val invalidateCache: suspend () -> Unit,
+    private val invalidateCache: suspend (sentToken: String) -> Unit,
     private val refreshSession: suspend () -> String,
 ) : PreludeInterceptor {
     override suspend fun intercept(
@@ -55,16 +57,11 @@ internal class AutoRefreshInterceptor(
 
         if (response.code != 401) return response
 
-        // A sibling caller may have refreshed while our 401 was in flight;
-        // invalidating now would re-expire that fresh token.
-        val fresh = getAccessToken()
-        if (fresh.isNotEmpty() && fresh != sentToken) {
-            response.close()
-            return next(request.withBearer(fresh))
-        }
-
+        // A sibling caller may have refreshed while our 401 was in flight:
+        // then its token is kept and `refreshSession` returns it without a
+        // new refresh.
         try {
-            invalidateCache()
+            invalidateCache(sentToken)
         } catch (e: Throwable) {
             // Close the 401 before rethrowing so its connection returns to
             // OkHttp's pool instead of waiting on the body's finalizer.

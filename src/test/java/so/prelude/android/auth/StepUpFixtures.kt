@@ -18,6 +18,10 @@ internal object StepUpFixtures {
     const val SCOPED_ACCESS_TOKEN =
         "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEiLCJzaWQiOiJzZXNzLTEifQ.sig"
 
+    // The token a refresh rotates to. payload: {"sub":"user-1","sid":"sess-2"}
+    const val ROTATED_ACCESS_TOKEN =
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEiLCJzaWQiOiJzZXNzLTIifQ.sig"
+
     /** Fixed clock baseline used across the suite. */
     const val BASE_EPOCH: Long = 1_700_000_000L
 
@@ -81,8 +85,9 @@ internal object StepUpFixtures {
     fun refreshOk(
         refreshToken: String = "refresh-v2",
         expiresInSec: Long = 3_600,
+        accessToken: String = SCOPED_ACCESS_TOKEN,
     ) = StubHttpSession.Canned.json(
-        """{"access_token":"$SCOPED_ACCESS_TOKEN","expires_at":${BASE_EPOCH + expiresInSec}}""",
+        """{"access_token":"$accessToken","expires_at":${BASE_EPOCH + expiresInSec}}""",
         headers =
             mapOf(
                 HttpHeader.REFRESH_TOKEN to refreshToken,

@@ -78,6 +78,24 @@ class PasskeyRegisterTest {
         }
 
     @Test
+    fun registerPasskey_succeeds_whenTheFollowUpRefreshFails() =
+        runBlocking {
+            val fixture = Fixture.make()
+            fixture.prePopulateStepUp()
+            installFlow(fixture)
+            fixture.http.install(
+                "/v1/session/refresh",
+                StubHttpSession.Canned.json("""{"code":"unauthorized","message":"revoked"}""", statusCode = 401),
+            )
+
+            val result =
+                fixture.client.registerPasskey(RegisterPasskeyOptions(username = "a@b.co"), FakePasskeyCeremony())
+
+            assertEquals("cred-id", result.credential.credentialId)
+            assertEquals(1, fixture.http.requestCount("/v1/session/refresh"))
+        }
+
+    @Test
     fun registerPasskey_alreadyRegistered_isSurfaced() =
         runBlocking {
             val fixture = Fixture.make()

@@ -12,12 +12,12 @@ object VersionInfo {
     /**
      * The minor version.
      */
-    const val MINOR = 7
+    const val MINOR = 9
 
     /**
      * The patch version.
      */
-    const val PATCH = 1
+    const val PATCH = 0
 
     /**
      * The version string.

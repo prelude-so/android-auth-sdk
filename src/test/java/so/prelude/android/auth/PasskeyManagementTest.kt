@@ -72,6 +72,22 @@ class PasskeyManagementTest {
         }
 
     @Test
+    fun deletePasskey_succeeds_whenTheFollowUpRefreshFails() =
+        runBlocking {
+            val fixture = Fixture.make()
+            fixture.prePopulateStepUp()
+            fixture.http.installAll(
+                "/v1/session/me/passkeys/c1" to StubHttpSession.Canned(statusCode = 204),
+                "/v1/session/refresh" to
+                    StubHttpSession.Canned.json("""{"code":"unauthorized","message":"revoked"}""", statusCode = 401),
+            )
+
+            fixture.client.deletePasskey("c1")
+
+            assertEquals(1, fixture.http.requestCount("/v1/session/refresh"))
+        }
+
+    @Test
     fun renamePasskey_emptyCredentialId_throws_withoutNetwork() =
         runBlocking {
             val fixture = Fixture.make()
