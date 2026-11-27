@@ -14,15 +14,19 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import so.prelude.android.auth.crypto.JwtDecoder
 import so.prelude.android.auth.crypto.fromJwt
+import so.prelude.android.auth.dpop.AndroidKeystoreDeviceKeyStore
 import so.prelude.android.auth.dpop.DPoPKeyStore
+import so.prelude.android.auth.dpop.DeviceKeyStore
 import so.prelude.android.auth.dpop.newDPoPKeyStore
 import so.prelude.android.auth.http.AutoRefreshInterceptor
 import so.prelude.android.auth.http.DPoPInterceptor
 import so.prelude.android.auth.http.DeviceIDInterceptor
+import so.prelude.android.auth.http.DeviceProofInterceptor
 import so.prelude.android.auth.http.HttpClient
 import so.prelude.android.auth.http.HttpHeader
 import so.prelude.android.auth.http.JSON_MEDIA_TYPE
 import so.prelude.android.auth.http.NowProvider
+import so.prelude.android.auth.http.PreludeInterceptor
 import so.prelude.android.auth.http.RefreshTokenResponse
 import so.prelude.android.auth.http.StepUpRefreshRequestBody
 import so.prelude.android.auth.http.WIRE_JSON
@@ -83,6 +87,8 @@ class PreludeAuthClient internal constructor(
     internal val accessTokenCache: AccessTokenCache,
     internal val clock: NowProvider,
     internal val signalsDispatcher: PreludeSignalsDispatcher? = null,
+    // Null sends no device proof.
+    internal val deviceKeyStore: DeviceKeyStore? = null,
 ) {
     /**
      * Application context retained for SDK surfaces that need one.
@@ -221,6 +227,7 @@ class PreludeAuthClient internal constructor(
         accessTokenCache = newDefaultAccessCache(context, baseUrl, hostOverride),
         clock = { Instant.now() },
         signalsDispatcher = signalsDispatcher ?: PreludeSignalsAdapter(context),
+        deviceKeyStore = AndroidKeystoreDeviceKeyStore(),
     )
 
     /**
@@ -230,6 +237,23 @@ class PreludeAuthClient internal constructor(
      */
     internal val dpopInterceptor: DPoPInterceptor
         get() = DPoPInterceptor(keyStore = keyStore, domain = domain, hostOverride = hostOverride)
+
+    internal fun deviceProofInterceptors(
+        mode: DeviceProofInterceptor.Mode,
+        challengeToken: String,
+    ): List<PreludeInterceptor> {
+        val store = deviceKeyStore ?: return emptyList()
+        return listOf(
+            DeviceProofInterceptor(
+                mode = mode,
+                domain = domain,
+                keyStore = keyStore,
+                deviceKeyStore = store,
+                challengeToken = challengeToken,
+                hostOverride = hostOverride,
+            ),
+        )
+    }
 
     /**
      * [AutoRefreshInterceptor] bound to this client's cache and

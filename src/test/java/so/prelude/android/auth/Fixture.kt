@@ -1,5 +1,6 @@
 package so.prelude.android.auth
 
+import so.prelude.android.auth.dpop.DeviceKeyStore
 import so.prelude.android.auth.dpop.FakeDPoPKeyStore
 import so.prelude.android.auth.http.DeviceIDInterceptor
 import so.prelude.android.auth.http.HttpClient
@@ -41,6 +42,7 @@ internal class Fixture(
     // Same shape — failure-mode tests inject a [FailingDeviceIDStorage]
     // to assert a device-id fault never fails the request chain.
     val deviceIDStorage: DeviceIDStorage = InMemoryDeviceIDStorage(),
+    val deviceKeyStore: DeviceKeyStore? = null,
 ) {
     val keyStore = FakeDPoPKeyStore()
     val accessTokenCache =
@@ -70,6 +72,7 @@ internal class Fixture(
             accessTokenCache = accessTokenCache,
             clock = { clock },
             signalsDispatcher = signalsDispatcher,
+            deviceKeyStore = deviceKeyStore,
         )
 
     companion object {
@@ -86,6 +89,7 @@ internal class Fixture(
             refreshTokenStorage: RefreshTokenStorage = InMemoryRefreshTokenStorage(),
             accessTokenStorage: AccessTokenStorage = InMemoryAccessTokenStorage(),
             deviceIDStorage: DeviceIDStorage = InMemoryDeviceIDStorage(),
+            deviceKeyStore: DeviceKeyStore? = null,
         ): Fixture =
             Fixture(
                 baseUrl = URL("https://$domain"),
@@ -95,6 +99,7 @@ internal class Fixture(
                 refreshTokenStorage = refreshTokenStorage,
                 accessTokenStorage = accessTokenStorage,
                 deviceIDStorage = deviceIDStorage,
+                deviceKeyStore = deviceKeyStore,
             )
     }
 }

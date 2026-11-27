@@ -5,6 +5,7 @@ import kotlinx.serialization.encodeToString
 import okhttp3.RequestBody.Companion.toRequestBody
 import so.prelude.android.auth.http.ChallengeDPoPInterceptor
 import so.prelude.android.auth.http.ChallengeTokenResponse
+import so.prelude.android.auth.http.DeviceProofInterceptor
 import so.prelude.android.auth.http.JSON_MEDIA_TYPE
 import so.prelude.android.auth.http.PasskeyStepUpContinueBody
 import so.prelude.android.auth.http.WIRE_JSON
@@ -77,14 +78,15 @@ internal suspend fun PreludeAuthClient.continueStepUpWithPasskey(
             request = request,
             deserializer = ChallengeTokenResponse.serializer(),
             interceptors =
-                listOf(
-                    ChallengeDPoPInterceptor(
-                        keyStore = keyStore,
-                        domain = domain,
-                        challengeToken = challenge.token,
-                        hostOverride = hostOverride,
+                deviceProofInterceptors(DeviceProofInterceptor.Mode.StepUp, challenge.token) +
+                    listOf(
+                        ChallengeDPoPInterceptor(
+                            keyStore = keyStore,
+                            domain = domain,
+                            challengeToken = challenge.token,
+                            hostOverride = hostOverride,
+                        ),
                     ),
-                ),
         )
 
     val advanced = body.challengeToken
