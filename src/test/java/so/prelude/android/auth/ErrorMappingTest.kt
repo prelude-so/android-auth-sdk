@@ -33,7 +33,14 @@ class ErrorMappingTest {
 
     @Test
     fun dpopAndUnauthorizedFamily_collapsesToUnauthorized() {
-        listOf("unauthorized", "invalid_dpop_proof", "dpop_key_mismatch", "missing_dpop_proof", "use_dpop_nonce").forEach { code ->
+        listOf(
+            "unauthorized",
+            "invalid_dpop_proof",
+            "invalid_device_proof",
+            "dpop_key_mismatch",
+            "missing_dpop_proof",
+            "use_dpop_nonce",
+        ).forEach { code ->
             assertTrue("$code → Unauthorized", map(code) is PreludeAuthError.Unauthorized)
         }
     }

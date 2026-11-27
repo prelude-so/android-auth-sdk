@@ -2,7 +2,6 @@ package so.prelude.android.auth.http
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.Json
 import okhttp3.Request
 import okhttp3.Response
 import so.prelude.android.auth.PreludeAuthError
@@ -21,11 +20,6 @@ private const val INVALID_DPOP_PROOF_CODE = "invalid_dpop_proof"
  * caused by clock drift, so we don't retry.
  */
 private const val CLOCK_SKEW_RETRY_THRESHOLD_MS = 1_000L
-
-// 4 KiB: production error bodies are sub-200 bytes; this caps the
-// damage of a misbehaving server returning a giant non-JSON 4xx page.
-private const val MAX_PEEK_BYTES = 4L * 1024L
-private val json = Json { ignoreUnknownKeys = true }
 
 /**
  * Attaches a DPoP proof to every request, persists `DPoP-Nonce`
@@ -56,7 +50,7 @@ internal class DPoPInterceptor(
                 val rotatedNonce = response.harvestNonce()
                 if (response.code in 200..299) return@withContext response
 
-                when (response.errorCode()) {
+                when (response.apiErrorCode()) {
                     USE_DPOP_NONCE_CODE -> {
                         retryWithFreshNonce(request, response, key, skewMs, rotatedNonce, next)
                     }
@@ -140,15 +134,4 @@ internal class DPoPInterceptor(
         val serverInstant = HttpDate.parse(dateHeader) ?: return null
         return serverInstant.toEpochMilli() - System.currentTimeMillis()
     }
-
-    /** Peek the body and return the JSON error code, or `null` on
-     *  any decode failure. Unrelated 4xx then surfaces as itself
-     *  instead of being retried. */
-    private fun Response.errorCode(): String? =
-        try {
-            val body = peekBody(MAX_PEEK_BYTES).string()
-            json.decodeFromString(ApiErrorJson.serializer(), body).code
-        } catch (_: Exception) {
-            null
-        }
 }

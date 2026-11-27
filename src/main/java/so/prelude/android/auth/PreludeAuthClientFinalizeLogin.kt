@@ -2,6 +2,7 @@ package so.prelude.android.auth
 
 import kotlinx.serialization.encodeToString
 import okhttp3.RequestBody.Companion.toRequestBody
+import so.prelude.android.auth.http.DeviceProofInterceptor
 import so.prelude.android.auth.http.FinalizeLoginRequestBody
 import so.prelude.android.auth.http.HttpHeader
 import so.prelude.android.auth.http.JSON_MEDIA_TYPE
@@ -79,7 +80,7 @@ internal suspend fun PreludeAuthClient.finalizeLogin(
         httpClient.sendJson(
             request = request,
             deserializer = RefreshTokenResponse.serializer(),
-            interceptors = listOf(dpopInterceptor),
+            interceptors = deviceProofInterceptors(DeviceProofInterceptor.Mode.Login, challengeToken) + dpopInterceptor,
         )
 
     if (body.accessToken.isEmpty()) {

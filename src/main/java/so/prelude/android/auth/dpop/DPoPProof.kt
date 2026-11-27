@@ -1,5 +1,6 @@
 package so.prelude.android.auth.dpop
 
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import java.time.Instant
@@ -66,6 +67,15 @@ internal fun createDPoPProof(
             if (nonce != null) put("nonce", JsonPrimitive(nonce))
         }
 
+    return compactES256(header, payload, key)
+}
+
+/** Compact ES256 JWS shared by the DPoP and device proofs. */
+internal fun compactES256(
+    header: JsonObject,
+    payload: JsonObject,
+    key: DPoPKey,
+): String {
     val encoder = Base64.getUrlEncoder().withoutPadding()
     val encodedHeader = encoder.encodeToString(header.toString().toByteArray(Charsets.UTF_8))
     val encodedPayload = encoder.encodeToString(payload.toString().toByteArray(Charsets.UTF_8))

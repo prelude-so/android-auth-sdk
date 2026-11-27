@@ -30,6 +30,9 @@ internal object HttpHeader {
      */
     const val DEVICE_ID = "X-Device-Id"
 
+    /** Device key proof on sign-in and step-up. */
+    const val DEVICE_PROOF = "Prelude-Device-Proof"
+
     /**
      * Request header on `/refresh`; response header on
      * `/login/finalize` and any `/refresh` that rotates the token.
